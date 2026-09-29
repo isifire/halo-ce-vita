@@ -26,7 +26,12 @@ swprintf()/vswprintf() take no buffer size.
 #ifndef __wint_t_defined
 #define __wint_t_defined 1
 #define _WINT_T 1
+#ifndef _WINT_T_DECLARED
+#define _WINT_T_DECLARED
+#if !defined(__WINT_TYPE__) || !defined(HALO_VITA)
 typedef unsigned short wint_t;
+#endif
+#endif
 #endif
 
 #ifndef WEOF

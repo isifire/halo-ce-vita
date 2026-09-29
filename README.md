@@ -1,146 +1,174 @@
-# Halo: Combat Evolved for Linux, Windows and Android
+# Halo: Combat Evolved for PlayStation Vita, Linux, Windows and Android
 
-This project is a port of the Halo: Combat Evolved decompilation to Linux,
-Windows and Android. The decompilation is of the Xbox build 2342
-(`cachebeta.exe`, SHA-256
-`4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520`).
+This project is a native port of the Halo: Combat Evolved decompilation to **PlayStation Vita**, **Linux**, **Windows**, and **Android**. The decompilation is based on the Xbox build 2342 (`cachebeta.exe`, SHA-256 `4cc87b45f721270392a96f1674ed2b5cd4a7bb4355faeab4531d1cf1884d9520`).
 
 <img width="1289" height="995" alt="The game on Linux" src="https://github.com/user-attachments/assets/0d3ad50f-f8b8-46cf-aef8-e3661da2a7d7" />
 
-The port starts from the decompilation of [bnunu/halo-1](https://github.com/bnunu/halo-1).
-That project is a fork of [punpckhdq/halo](https://github.com/punpckhdq/halo).
+The port builds upon the decompilation work of [bnunu/halo-1](https://github.com/bnunu/halo-1), [punpckhdq/halo](https://github.com/punpckhdq/halo), and the multiplatform base from [cybersecurity/halo-ce-universal](https://github.com/cybersecurity/halo-ce-universal).
 
-## Download
+---
 
-GitHub Actions builds the game for each commit. These links download the
-builds of the latest release:
+## 🎮 PlayStation Vita Port Status
 
-| Platform | Release | Debug |
-| --- | --- | --- |
-| Linux | [halo-linux-release.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-linux-release.zip) | [halo-linux-debug.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-linux-debug.zip) |
-| Windows | [halo-windows-release.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-windows-release.zip) | [halo-windows-debug.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-windows-debug.zip) |
-| Android | [halo-android-release.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-android-release.zip) | [halo-android-debug.zip](https://github.com/cybersecurity/halo-ce-universal/releases/latest/download/halo-android-debug.zip) |
+The PS Vita port focuses on bringing Halo: Combat Evolved to Sony's handheld (ARMv7 Cortex-A9), featuring hardware-accelerated rendering through **VitaGL**, a relocatable memory arena, and a native platform abstraction layer.
 
-Use the release build to play. The debug build stops at the first failed
-assertion and writes it to the log. Use the debug build to find and report
-problems.
+### Validated Milestones (Hardware Tested)
+* **Milestone 2.0 (GPU Textures & Maps Baseline)**:
+  - Validated on real PS Vita hardware with smooth VitaGL hardware rendering.
+  - Native loading of original `.map` files: `ui.map`, `bloodgulch.map`, and `a10.map`.
+  - Real BSP collision geometry, first-person camera, gravity, jumping, and movement.
+  - DXT1, DXT3, DXT5, and AY8 texture decoding directly from map bitmap tags.
+  - Half-Lambert lighting and 32-bit packed vertex normal decompression.
+  - Reference: [`port/vita/releases/2.0.md`](port/vita/releases/2.0.md).
+* **Milestone 0.2 (Platform Contracts Pass)**:
+  - Executed on hardware with `PLATFORM_CONTRACT: PASS` (`halo-vita-platform-0.2.vpk`, Title ID `HVIT00002`).
+  - Validates Win32 file I/O, asynchronous alertable Ex callbacks, real `ui.map` header parsing, directory enumeration, thread suspension/resumption, per-thread last-error isolation, high-resolution RTC timing, memory management, and Xbox controller mapping via `sceCtrl`.
+  - Reference: [`port/vita/PLATFORM_STATUS.md`](port/vita/PLATFORM_STATUS.md).
+* **CPU Recompilation & Engine Audit**:
+  - **468/468 units compiled**: All 466 C units available in the engine plus Vita platform adapters compile cleanly for ARMv7 hard-float with Clang.
+  - Reproducible symbol audit tracks remaining external dependencies (Direct3D 8, Win32 kernel, XAudio) towards full engine main loop integration.
+  - Comprehensive architectural report: [`port/vita/README_PORT_STATUS.md`](port/vita/README_PORT_STATUS.md).
 
-The game updates itself. At start-up it looks for a newer release, and asks
-if you want to install it. Refer to "Updates" in
-[port/linux/README.md](port/linux/README.md#updates).
+For detailed documentation, architecture, and developer notes on the Vita port, see [`port/vita/README.md`](port/vita/README.md).
 
-Each build of the `main` branch that passes on all three platforms is a new
-release. The [Releases](https://github.com/cybersecurity/halo-ce-universal/releases)
-page keeps the last five releases. If the latest build has a problem, get
-an older build from that page.
+---
 
-## Game data
+## 💻 Supported Platforms
 
-The port does not include the game data. Download an Xbox disc image
-(`.xiso` or `.iso`) of Halo: Combat Evolved. All versions of the game
-operate.
+| Platform | Architecture & Stack | Documentation |
+| :--- | :--- | :--- |
+| **PlayStation Vita** | ARMv7-A Cortex-A9 (hard-float), VitaGL (GXM), VitaSDK, sceCtrl | [`port/vita/README.md`](port/vita/README.md) |
+| **Linux** | 32-bit x86, OpenGL 4.5, SDL3 | [`port/linux/README.md`](port/linux/README.md) |
+| **Windows** | 32-bit x86, OpenGL 4.5, SDL3 | [`port/windows/README.md`](port/windows/README.md) |
+| **Android** | arm64, OpenGL ES 3, SDL3 | [`port/android/README.md`](port/android/README.md) |
 
-1. Start the game.
-2. At the first start, the game asks for the disc image. Select it.
-3. The game extracts the `maps/` folder. Then the game starts.
+The Linux README also documents game controls, configuration settings, and multiplayer features, which are shared across platforms.
 
-On Linux and Windows, the game puts `maps/` next to the executable. On
-Android, copy the disc image to the phone first. The app puts `maps/` in its
-data folder. Refer to [port/android/README.md](port/android/README.md).
+---
 
-## Platforms
+## 📦 Game Data
 
-Each platform has its own instructions:
+The port does **not** include proprietary game data. You must provide your own legally acquired Halo: Combat Evolved files from an original Xbox disc image (`.iso` / `.xiso`) or retail `.map` files.
 
-| Platform | Instructions |
-| --- | --- |
-| Linux (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/linux/README.md](port/linux/README.md) |
-| Windows (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/windows/README.md](port/windows/README.md) |
-| Android (arm64 app, OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
+### PS Vita
+1. Create the maps directory on your Vita: `ux0:data/halo/maps/`.
+2. Copy your map files into this directory (at minimum `ui.map`, plus campaign or multiplayer maps like `bloodgulch.map` or `a10.map`).
+3. Launch the installed VPK.
+4. Diagnostic and execution logs are written to `ux0:data/halo-vita-diagnostic/`.
 
-The Linux README also gives the controls, the settings and the multiplayer
-functions. These are almost the same on all platforms.
+### Linux and Windows
+1. Start the game executable.
+2. On first launch, the game prompts for your Xbox disc image (`.iso` or `.xiso`).
+3. The game extracts the `maps/` directory next to the executable and launches.
 
-## Multiplayer
+### Android
+1. Copy the Xbox disc image to your device storage.
+2. Select it on first launch; the app extracts `maps/` into its internal data folder. Refer to [`port/android/README.md`](port/android/README.md).
 
-The game can play system link games on a local network and on the internet:
+---
 
-- A system link game can have up to 128 players on up to 128 machines.
-- Linux, Windows and Android machines can play in the same game.
-- An invite link lets a machine join a game on the internet. No server of
-  this project is necessary.
-- The default netcode is new. Each machine moves its own player at once,
-  and the host makes the decisions for the game. Refer to
-  [port/linux/NETCODE.md](port/linux/NETCODE.md).
+## 🛠️ Building
 
-## Build the game
+### 1. PlayStation Vita
 
-You do not need the Xbox SDK. The port supplies the SDK declarations that
-the game uses. Refer to [port/include/xdk](port/include/xdk/README.md).
+**Requirements:**
+- [VitaSDK](https://vitasdk.org/) with environment variable `VITASDK` set and added to `PATH`.
+- Clang compiler (version 22.x recommended, with ARMv7 target support).
+- CMake 3.16+ and Python 3.
+- Native build tool (`ninja` or `make` / `mingw32-make` on Windows).
 
-To build the game:
+**Build steps:**
+```sh
+# Configure CMake for Vita
+cmake -S port/vita -B build/vita-core -DHALO_CLANG=clang
 
-1. Install Python and [ninja](https://ninja-build.org/).
-2. Install the tools for your platform. Refer to the README for the
-   platform.
-3. In the root folder of the repository, enter `python configure.py`.
-4. Enter `ninja` with the target for the platform:
+# Build VPK packages
+cmake --build build/vita-core -j$(nproc)
+```
+*(On Windows, add `-G "MinGW Makefiles"` or specify `CMAKE_MAKE_PROGRAM` if needed).*
 
-| Target | Result |
-| --- | --- |
-| `ninja linux` | `build/linux/halo` |
-| `ninja windows` (on Windows) | `build/windows/halo.exe` and `SDL3.dll` |
-| `ninja android_apk` | `port/android/app/build/outputs/apk/debug/app-debug.apk` |
+**Primary Build Targets:**
+| Target / Artifact | Description |
+| :--- | :--- |
+| `halo-vita-menu-bloodgulch-2.0.vpk` | Milestone 2.0 VPK (Blood Gulch & UI menu test runner with VitaGL) |
+| `halo-vita-platform-0.2.vpk` | Milestone 0.2 VPK (Platform contracts validation suite) |
+| `vita-engine-audit` | Developer target: compiles all 468 engine units and regenerates link audit reports |
+| `vita-engine-link` | Developer target: diagnostic link probe with VitaSDK libraries |
 
-If you enter `ninja` without a target, ninja builds the game for the
-computer that you use.
+**Host Unit Tests:**
+To test the Vita memory arena allocator natively on your host machine without Vita APIs:
+```sh
+cc -std=c11 -Wall -Wextra -Iport/vita/include port/vita/src/arena.c port/vita/tests/test_arena.c -o test_arena
+./test_arena
+```
 
-`tools/ci_build.py` makes the same builds as GitHub Actions. For example,
-enter `python tools/ci_build.py linux release`.
+---
 
-### Build options
+### 2. Linux, Windows, and Android
 
-Give these options to `configure.py`:
+The native desktop and Android ports use Python configuration and the `ninja` build system. Cleanroom Xbox SDK headers are provided in [`port/include/xdk`](port/include/xdk/README.md).
 
-| Option | Result |
-| --- | --- |
-| (none) | A debug build. A failed assertion stops the game. |
-| `--release` | A release build. The game does not examine assertions, as in the retail game. |
-| `--portable` | The Linux and Windows builds operate on all x86-64 processors. Use this option for builds that you give to other persons. |
-| `--lto=thin`, `--lto=off` | Less link-time optimization. The link is faster. |
-| `--pgo=off` | No profile-guided optimization. |
-| `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
+**Build steps:**
+1. Install Python 3 and [ninja](https://ninja-build.org/).
+2. Install platform-specific toolchains (see each platform's README).
+3. Run configuration:
+   ```sh
+   python configure.py
+   ```
+4. Build with ninja:
+   | Command | Target Output |
+   | :--- | :--- |
+   | `ninja linux` | `build/linux/halo` |
+   | `ninja windows` | `build/windows/halo.exe` and `SDL3.dll` |
+   | `ninja android_apk` | `port/android/app/build/outputs/apk/debug/app-debug.apk` |
 
-Without `--portable`, the Linux and Windows builds use all the instructions
-of the processor that builds them (`-march=native`). Such a build does not
-always start on a different computer.
+Entering `ninja` without arguments builds for the host computer. For CI replication, use `python tools/ci_build.py <platform> <release|debug>`.
 
-### Optimization profiles
+#### Build Options (`configure.py`)
+| Option | Description |
+| :--- | :--- |
+| *(default)* | Debug build (assertions enabled, stops on failure). |
+| `--release` | Release build (assertions disabled for maximum performance). |
+| `--portable` | Builds with generic x86-64 (SSE2) instructions instead of `-march=native`. |
+| `--lto=thin` / `--lto=off` | Select link-time optimization level (`full` by default). |
+| `--pgo=off` | Disables profile-guided optimization. |
+| `--pgo=train` | Trains and records a profile for the platform (requires game data in `assets/`). |
 
-The builds use profiles of the game to optimize the code:
+---
 
-- `pgo/halo_linux.profdata` for Linux and Android.
-- `pgo/halo_windows.profdata` for Windows.
+## 🌐 Multiplayer
 
-The profiles need clang 22 or later. With an older clang, the builds do not
-use the profiles.
+The game supports System Link multiplayer over local networks and the internet:
+- Up to 128 players per match across up to 128 machines.
+- Cross-platform play: Linux, Windows, and Android clients can participate in the same match.
+- Direct join via invite links without requiring dedicated central servers.
+- Modernized netcode with client-side responsive movement and host authoritative game state. Refer to [`port/linux/NETCODE.md`](port/linux/NETCODE.md).
 
-To record a new profile:
+---
 
-1. Delete the profile.
-2. Enter `python configure.py --pgo=train`.
-3. Enter `ninja linux` or `ninja windows`.
+## 📁 Repository Structure
 
-The build then plays the main menu and the first minute of each campaign
-level. This procedure continues for approximately 15 minutes. The game
-data must be in `assets/`.
+```
+├── port/
+│   ├── vita/           # PlayStation Vita port (VitaGL, memory arena, XAPI translation, tests)
+│   ├── linux/          # Linux port implementation and platform layer
+│   ├── windows/        # Windows port implementation
+│   ├── android/        # Android Gradle project and GLES3 backend
+│   └── include/xdk/    # Cleanroom Xbox Development Kit headers
+├── source/             # Original decompiled C engine source code
+│   ├── cache/          # Tag cache and map decompression
+│   ├── rasterizer/     # Geometry, shaders, and rendering logic
+│   ├── memory/         # Memory managers, CRC, and zlib
+│   └── ...             # Game subsystems (physics, AI, networking, etc.)
+├── tools/              # Auditing scripts, objdiff integration, and build generators
+└── docs/               # Technical notes, matching methodology, and architectural audits
+```
 
-### The byte-matching build
+---
 
-The original project also has a byte-matching build. That build compiles
-the game with the compiler of the Xbox SDK and compares the result with
-`cachebeta.exe`. This project does not generate that build, because the
-Xbox SDK is not free to distribute. The sources of that build are not
-changed. To use the build again, set `SolutionConfig.matching` in
-`tools/project_x86.py`. You must also have the Xbox SDK in `xbox/` and
-`cachebeta.exe` in the root folder.
+## 📜 Credits & Acknowledgments
+
+- [punpckhdq/halo](https://github.com/punpckhdq/halo) - Initial Xbox Halo decompilation project.
+- [bnunu/halo-1](https://github.com/bnunu/halo-1) - Enhanced decompilation and reverse-engineering fork.
+- [cybersecurity/halo-ce-universal](https://github.com/cybersecurity/halo-ce-universal) - Universal multiplatform base (Linux, Windows, Android).
+- [VitaSDK](https://vitasdk.org/) and [vitaGL](https://github.com/Rinnegatamante/vitaGL) by Rinnegatamante - PlayStation Vita homebrew development toolchain and OpenGL wrapper.

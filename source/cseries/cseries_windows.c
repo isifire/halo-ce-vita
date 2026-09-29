@@ -116,6 +116,15 @@ void display_debug_string(
 void system_exit(
 	long code)
 {
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "system_exit: exit requested with code %ld\n", code);
+			fclose(f_diag);
+		}
+	}
+#endif
 #ifdef HALO_RELEASE
 	/* an assertion a release build skipped (display_assert) carries on; a
 	fatal error (errors.c exits with -4998) still stops */

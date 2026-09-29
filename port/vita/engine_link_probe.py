@@ -1,7 +1,8 @@
-"""Perform real partial and SDK-assisted links; never emit a runnable VPK.
+"""Perform real partial and SDK-assisted links and package the Vita executable.
 
 Keeps all game sections to expose every dependency. This is broader than the
-reachable startup graph and does not imply ABI or runtime compatibility.
+reachable startup graph; successful linking alone does not imply runtime
+compatibility, so hardware boot logs remain part of validation.
 """
 import argparse
 import hashlib
@@ -27,7 +28,7 @@ def main():
         return str(base.with_suffix('.exe') if base.with_suffix('.exe').exists() else base)
     rsp = out / 'objects.rsp'
     root=Path(__file__).resolve().parents[2]
-    records=list(records)
+    records = [r for r in records if not r['source'].endswith(('arena.c', 'memory_vita.c'))]
     for name in ('arena','memory_vita'):
         source=root/'port/vita/src'/ (name+'.c')
         obj=out/(name+'.o')
@@ -50,8 +51,11 @@ def main():
         cmd = [tool('gcc'), '-nostartfiles', '-Wl,-e,main_loop',
                '-Wl,--no-wchar-size-warning', '-Wl,--no-enum-size-warning',
                '-Wl,-Map,'+(out/'engine.map').as_posix(), str(combined),
-               '-Wl,--start-group', '-lc', '-lm', '-lgcc',
+               '-L'+str(root/'gpu-hard/arm-vita-eabi/lib'),
+               '-Wl,--start-group', '-lvitaGL', '-lvitashark', '-lmathneon', '-lstdc++', '-lc', '-lm', '-lgcc',
                '-lSceLibKernel_stub', '-lSceIofilemgr_stub', '-lSceCtrl_stub', '-lSceRtc_stub',
+               '-lSceGxm_stub', '-lSceDisplay_stub', '-lSceShaccCg_stub', '-lSceAppMgr_stub', '-lSceCommonDialog_stub',
+               '-lSceAudio_stub', '-lSceNet_stub', '-lSceNetCtl_stub', '-lSceSysmodule_stub',
                '-Wl,--end-group', '-o', str(out/'engine-link-probe.elf')]
         result = subprocess.run(cmd,capture_output=True,text=True)
         log = result.stdout+result.stderr
@@ -60,6 +64,39 @@ def main():
         summary.update(sdk_link_exit=result.returncode, sdk_command=cmd,
                        undefined_unique=len(unresolved), undefined=unresolved,
                        duplicate_definitions=sorted(set(re.findall(r"multiple definition of [`']([^'`]+)['`]",log))))
+        if result.returncode == 0:
+            elf_reloc = out / 'halo-vita-full.elf'
+            velf = out / 'halo-vita-full.velf'
+            eboot = out / 'eboot.bin'
+            sfo = out / 'param.sfo'
+            vpk = out / 'halo-ce-vita.vpk'
+            full_cmd = [tool('gcc'), '-Wl,-q', '-Wl,--no-wchar-size-warning', '-Wl,--no-enum-size-warning',
+                        '-Wl,-Map,' + (out/'engine-full.map').as_posix(), str(combined),
+                        '-L' + str(root/'gpu-hard/arm-vita-eabi/lib'),
+                        '-Wl,--start-group', '-lvitaGL', '-lvitashark', '-lmathneon', '-lstdc++', '-lc', '-lm', '-lgcc',
+                        '-lSceLibKernel_stub', '-lSceIofilemgr_stub', '-lSceCtrl_stub', '-lSceRtc_stub',
+                        '-lSceGxm_stub', '-lSceDisplay_stub', '-lSceShaccCg_stub', '-lSceAppMgr_stub', '-lSceCommonDialog_stub',
+                        '-lSceAudio_stub', '-lSceNet_stub', '-lSceNetCtl_stub', '-lSceSysmodule_stub',
+                        '-Wl,--end-group', '-o', str(elf_reloc)]
+            subprocess.run(full_cmd, capture_output=True, check=True)
+            vita_elf_create = sdk / 'bin' / ('vita-elf-create' + ('.exe' if (sdk/'bin/vita-elf-create.exe').exists() else ''))
+            subprocess.run([str(vita_elf_create), str(elf_reloc), str(velf)], capture_output=True, check=True)
+            vita_make_fself = sdk / 'bin' / ('vita-make-fself' + ('.exe' if (sdk/'bin/vita-make-fself.exe').exists() else ''))
+            subprocess.run([str(vita_make_fself), '-c', str(velf), str(eboot)], capture_output=True, check=True)
+            vita_mksfoex = sdk / 'bin' / ('vita-mksfoex' + ('.exe' if (sdk/'bin/vita-mksfoex.exe').exists() else ''))
+            subprocess.run([str(vita_mksfoex), '-s', 'TITLE_ID=HALOCE001', 'Halo Combat Evolved', str(sfo)], capture_output=True, check=True)
+            vita_pack_vpk = sdk / 'bin' / ('vita-pack-vpk' + ('.exe' if (sdk/'bin/vita-pack-vpk.exe').exists() else ''))
+            pack_cmd = [
+                str(vita_pack_vpk), '-s', str(sfo), '-b', str(eboot),
+                '-a', str(root / 'port/vita/sce_sys/icon0.png') + '=sce_sys/icon0.png',
+                '-a', str(root / 'port/vita/sce_sys/livearea/contents/bg.png') + '=sce_sys/livearea/contents/bg.png',
+                '-a', str(root / 'port/vita/sce_sys/livearea/contents/startup.png') + '=sce_sys/livearea/contents/startup.png',
+                '-a', str(root / 'port/vita/sce_sys/livearea/contents/template.xml') + '=sce_sys/livearea/contents/template.xml',
+                str(vpk)
+            ]
+            subprocess.run(pack_cmd, capture_output=True, check=True)
+            summary['vpk'] = str(vpk)
+            print('VPK PACKAGED: ' + str(vpk))
     summary['objects_sha256'] = {r['source']:hashlib.sha256(Path(r['object']).read_bytes()).hexdigest() for r in records}
     (out/'link-probe.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('PARTIAL_LINK exit='+str(partial.returncode))

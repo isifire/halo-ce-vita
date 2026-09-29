@@ -363,6 +363,15 @@ void display_assert(
 	long line,
 	boolean fatal)
 {
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "ASSERTION %s in %s:%ld: %s\n", fatal ? "FATAL" : "WARN", file ? file : "?", line, information ? information : "");
+			fclose(f_diag);
+		}
+	}
+#endif
 #ifdef HALO_RELEASE
 	/* release builds skip assertions (cseries.h), including the ones
 	written out as display_assert followed by system_exit(-1), which then

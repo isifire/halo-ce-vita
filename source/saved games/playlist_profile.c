@@ -480,6 +480,8 @@ static void playlist_profile_create_default_profiles_on_disk(
 	long string_list_index = tag_loaded(
 		UNICODE_STRING_LIST_TAG,
 		"ui\\default_multiplayer_game_setting_names");
+	error(_error_silent, "playlist defaults: name tag lookup complete (index=%08x)",
+		string_list_index);
 
 	if (string_list_index != NONE)
 	{
@@ -492,6 +494,7 @@ static void playlist_profile_create_default_profiles_on_disk(
 			wchar_t *display_name;
 			boolean file_written = FALSE;
 
+			error(_error_silent, "playlist defaults: building profile %ld", profile_index);
 			variant = *playlist_profile_default_data.default_variant_building_functions[
 				profile_index](&temporary);
 
@@ -504,6 +507,8 @@ static void playlist_profile_create_default_profiles_on_disk(
 			display_name = unicode_string_list_get_string(
 				string_list_index,
 				(short)profile_index);
+			error(_error_silent, "playlist defaults: profile %ld localized name resolved",
+				profile_index);
 
 			csmemcpy(
 				block,
@@ -519,6 +524,8 @@ static void playlist_profile_create_default_profiles_on_disk(
 				block,
 				PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,
 				(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));
+			error(_error_silent, "playlist defaults: profile %ld checksum complete",
+				profile_index);
 
 			if (file_reference_create_from_path(&file, path, FALSE) &&
 				file_create(&file) &&
@@ -532,6 +539,7 @@ static void playlist_profile_create_default_profiles_on_disk(
 			if (file_written == TRUE)
 			{
 				playlist_profile_globals.number_of_default_profiles++;
+				error(_error_silent, "playlist defaults: profile %ld written", profile_index);
 			}
 			else
 			{

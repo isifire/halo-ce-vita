@@ -15,8 +15,12 @@ symbols in this file:
 /* ---------- headers */
 
 #include "cseries.h"
+#include "cseries/errors.h"
 #include "text/text_group.h"
 #include "tag_files/tag_groups.h"
+#ifdef HALO_VITA
+#include "cache/physical_memory_map.h"
+#endif
 
 /* ---------- constants */
 
@@ -250,12 +254,45 @@ wchar_t *unicode_string_list_get_string(long tag_index, short string_index)
 	{
 		struct string_list *list = unicode_string_list_definition_get(tag_index);
 
+		#ifdef HALO_VITA
+		byte *tag_base = (byte *)physical_memory_get_tag_cache_base_address();
+		byte *tag_end = tag_base + 0x01600000;
+		if ((byte *)list < tag_base || (byte *)list > tag_end - sizeof(*list) ||
+			list->strings.count < 0 || list->strings.count > 4096 ||
+			(list->strings.count > 0 &&
+				((byte *)list->strings.address < tag_base ||
+				 (byte *)list->strings.address > tag_end -
+					list->strings.count * sizeof(struct string_list_entry))))
+		{
+			error(_error_silent,
+				"unicode string list %08x has invalid Vita storage (list=%p count=%ld data=%p)",
+				tag_index, list, list ? list->strings.count : -1,
+				list ? list->strings.address : NULL);
+			return result;
+		}
+		#endif
+
 		if (string_index >= 0 && string_index < list->strings.count)
 		{
+			#ifdef HALO_VITA
+			struct string_list_entry *entry =
+				&((struct string_list_entry *)list->strings.address)[string_index];
+			if (entry->string.size < (long)sizeof(wchar_t) ||
+				(entry->string.size % sizeof(wchar_t)) != 0 ||
+				(byte *)entry->string.address < tag_base ||
+				(byte *)entry->string.address > tag_end - entry->string.size)
+			{
+				error(_error_silent,
+					"unicode string %08x:%d has invalid Vita storage (size=%ld data=%p)",
+					tag_index, string_index, entry->string.size, entry->string.address);
+				return result;
+			}
+			#else
 			struct string_list_entry *entry = TAG_BLOCK_GET_ELEMENT(
 				&list->strings,
 				string_index,
 				struct string_list_entry);
+			#endif
 
 			if (entry->string.size > 0)
 			{

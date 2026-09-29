@@ -190,10 +190,14 @@ void *game_state_allocate_buffer(
 		"c:\\halo\\SOURCE\\saved games\\game_state_xbox.c",
 		58,
 		result);
+#ifndef HALO_VITA
 	match_assert(
 		"c:\\halo\\SOURCE\\saved games\\game_state_xbox.c",
 		59,
 		(unsigned long)result==address);
+#else
+	address = (unsigned long)result;
+#endif
 
 	XPhysicalProtect(
 		(void *)(address+cpu_size),

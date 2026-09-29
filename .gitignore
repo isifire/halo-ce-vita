@@ -1,24 +1,49 @@
-# IDE and operating-system files
+# ==============================================================================
+# Halo: Combat Evolved - Git Ignore Rules
+# ==============================================================================
+
+# IDE, Editor, and OS files
 .idea/
 .vs/
 .vscode/
+*.suo
+*.user
+*.userosv
+*.sln.docstates
 .DS_Store
 Thumbs.db
 Desktop.ini
 *.swp
 *~
+*.bak
+*.orig
+.directory
+.clangd/
+
 # Language and tool caches
 __pycache__/
 *.py[cod]
 .mypy_cache/
+.pytest_cache/
+*.egg-info/
+/.venv/
+/venv/
+/env/
+/.env/
 .cache/
-# CMake and compiler output
+
+# CMake, Ninja, and compiler output
 build/
+build-*/
+*-build/
+cmake-build-*/
 projects/
 .ninja_*
 build.ninja
 CMakeCache.txt
 CMakeFiles/
+CMakeScripts/
+Testing/
 cmake_install.cmake
 CTestTestfile.cmake
 compile_commands.json
@@ -36,13 +61,29 @@ compile_commands.json
 *.log
 *.rsp
 *.d
-# Vita packages
+
+# Native host test binaries (without extension on Unix/macOS)
+test_arena
+
+# PlayStation Vita packages and build artifacts
 *.vpk
 *.sfo
-eboot.bin
 param.sfo
-/*-build/
+eboot.bin
+*-eboot.bin
+*.bin
+outputs/
+
+# Vita engine audit and link probes
+engine-objects/
+engine-audit/
+engine-link/
 /engine-audit-build*/
+compile-results.json
+link-probe.json
+platform-*.txt
+core-*.txt
+
 # Decompiled-code tooling output
 ctx.*
 *.ctx
@@ -57,14 +98,15 @@ objdiff.json
 *.bndb
 xbox/
 !source/**/xbox/
-# Proprietary game data
+
+# Proprietary game data & extracted map assets
 assets/
 original/
 *.iso
 *.xiso
 *.map
-/a10-*.bin
-# Locally installed/downloaded Vita SDK and dependencies
+
+# Locally installed/downloaded Vita SDK, packages, and dependencies
 /sdk-extracted/
 /vdpm/
 /vita-headers/
@@ -72,13 +114,18 @@ original/
 /gpu-deps/
 /gpu-hard/
 /gpu-source/
-/*.pkg.tar.xz
+*.pkg.tar.xz
 /vitasdk.tar.bz2
 /vdpm-seed.tar.bz2
-/vdpm-seed.sha256
+/*.sha256
 /vitagl-source.zip
+*.tar.bz2
+*.tar.xz
+*.tar.gz
+
 # Duplicate checkout; repository root is canonical
 /halo-ce-universal/
+
 # One-off extraction and prototype files
 /bitmap-preview/
 /gpu-assets.json
@@ -87,5 +134,6 @@ original/
 /package_core03.py
 /sdk-asset.json
 /vitagl-readme.md
-# CI output
+
+# CI and distribution output
 dist/

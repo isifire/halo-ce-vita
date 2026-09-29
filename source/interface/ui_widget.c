@@ -4570,15 +4570,27 @@ short remap_sticks_for_local_player(
 static unsigned long __stdcall filesystem_initialization_thread_proc(
 	void *input)
 {
+	error(_error_silent, "filesystem initialization: checking free space and save count");
 	widget_globals.filesystem_check_result = saved_game_perform_file_system_checks();
+	error(_error_silent, "filesystem initialization: checks complete (result=%d)",
+		widget_globals.filesystem_check_result);
 	if (!widget_globals.filesystem_check_result)
 	{
 		word number_of_profiles = 1;
 		long profile_index;
 
+		error(_error_silent, "filesystem initialization: enumerating playlist profiles");
 		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		error(_error_silent, "filesystem initialization: playlist profiles complete (count=%u)",
+			number_of_profiles);
+		number_of_profiles = 1;
+		error(_error_silent, "filesystem initialization: enumerating player profiles");
 		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+		error(_error_silent, "filesystem initialization: player profiles complete (count=%u)",
+			number_of_profiles);
+		error(_error_silent, "filesystem initialization: restoring last player profile");
 		player_ui_get_player1_last_used_profile_index();
+		error(_error_silent, "filesystem initialization: complete");
 	}
 
 	return 0;
@@ -4594,6 +4606,16 @@ static void perform_filesystem_initialization(
 	error(_error_silent, "begining filesystem checks & saved game file enumeration...");
 	ui_widgets_inhibit_processing(TRUE);
 	widget_globals.filesystem_check_result = 0;
+#ifdef HALO_VITA
+	/* The shell starts drawing immediately after this call.  Running profile
+	 * creation on another thread races the Vita filesystem shim and tag-backed
+	 * string access with the first VitaGL frames.  The operation only occurs
+	 * during shell startup, so serialize it until those services are made
+	 * independently thread-safe. */
+	filesystem_initialization_thread_proc(NULL);
+	widget_globals.initialization_thread = NULL;
+	ui_widgets_inhibit_processing(FALSE);
+#else
 	if (!create_thread(0, filesystem_initialization_thread_proc, NULL, &widget_globals.initialization_thread))
 	{
 		error(_error_silent, "failed to spawn thread for filesystem checks - running synchronously!");
@@ -4601,6 +4623,7 @@ static void perform_filesystem_initialization(
 		filesystem_initialization_thread_proc(NULL);
 		ui_widgets_inhibit_processing(FALSE);
 	}
+#endif
 
 	return;
 }

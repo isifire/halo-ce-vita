@@ -79,18 +79,18 @@ uint32_t halo_vita_protection(const void *address) {
     return halo_vita_to_offset(address, &offset) == 0 ? occupied[offset / PAGE] : 0u;
 }
 int halo_vita_protect(void *address, uint32_t bytes, uint32_t protect) {
-    uint32_t offset;
+    uint32_t offset, i;
     protect &= ~0x400u;
     if (!bytes || halo_vita_to_offset(address, &offset) < 0 ||
         offset % PAGE || (protect != 2u && protect != 4u)) return -1;
     uint32_t pages = (bytes + PAGE - 1) / PAGE;
     uint32_t first = offset / PAGE;
     if (first >= PAGES || pages > PAGES - first) return -1;
-    for (uint32_t i = first; i < first + pages; ++i)
+    for (i = first; i < first + pages; ++i)
         if (!occupied[i]) return -1;
     /* CPU bring-up tracks the Xbox protection contract. Vita page permissions
      * are unchanged until a safe kernel API implementation is proven. */
-    for (uint32_t i = first; i < first + pages; ++i) occupied[i] = (unsigned char)protect;
+    for (i = first; i < first + pages; ++i) occupied[i] = (unsigned char)protect;
     return 0;
 }
 unsigned halo_vita_allocation_count(void) { return count; }

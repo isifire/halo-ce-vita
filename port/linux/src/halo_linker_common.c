@@ -17,7 +17,11 @@ Functions: fast_ftol_C and main_crash are Halo functions that are still
 missing from the reconstruction (docs/xbox_link_probe_20260924.md).
 */
 
+#ifndef HALO_VITA
 #include "platform.h"
+#else
+void platform_log(const char *format, ...);
+#endif
 
 #include <math.h>
 #include <stdlib.h>

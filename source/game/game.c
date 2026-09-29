@@ -890,6 +890,15 @@ void game_precache_new_map(
 				_error_silent,
 				"shouldn't be here... map '%s' doesn't exist",
 				map_name);
+#ifdef HALO_VITA
+			{
+				FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+				if (f_diag) {
+					fprintf(f_diag, "ERROR: Map '%s' (ui.map) does NOT exist or could not be opened in ux0:data/halo/maps/!\n", map_name);
+					fclose(f_diag);
+				}
+			}
+#endif
 			if (blocking)
 			{
 				match_vassert(
@@ -918,9 +927,16 @@ void game_precache_new_map(
 			{
 				map_status = cache_files_precache_map_status(
 					&game_globals->loading_progress);
+#ifdef HALO_VITA
+				/* The Xbox loading screen traverses tag-backed rasterizer state
+				 * while the UI cache is still being populated.  The Vita backend
+				 * must not render those resources until the copy has completed. */
+				Sleep(16);
+#else
 				main_pregame_render();
 				main_rasterizer_throttle();
 				main_present_frame();
+#endif
 			}
 			while (!map_status);
 

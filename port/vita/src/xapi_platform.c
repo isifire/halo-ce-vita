@@ -42,6 +42,23 @@ struct vita_handle {
     LPVOID thread_parameter;
     int thread_started;
 };
+#define VITA_MAX_HANDLES 256
+static struct vita_handle *vita_handles[VITA_MAX_HANDLES];
+
+static int register_handle(struct vita_handle *handle) {
+    int i;
+    for(i=0;i<VITA_MAX_HANDLES;i++)
+        if(__sync_bool_compare_and_swap(&vita_handles[i],NULL,handle))return 1;
+    return 0;
+}
+static void unregister_handle(struct vita_handle *handle) {
+    int i;
+    for(i=0;i<VITA_MAX_HANDLES;i++)
+        if(__sync_bool_compare_and_swap(&vita_handles[i],handle,NULL))return;
+}
+static void discard_handle(struct vita_handle *handle) {
+    if(handle){unregister_handle(handle);handle->magic=0;free(handle);}
+}
 
 struct completion {
     struct completion *next;
@@ -78,21 +95,31 @@ static int dispatch_completions(void) {
 
 static struct vita_handle *new_handle(int kind) {
     struct vita_handle *h=calloc(1,sizeof(*h));
-    if(h){h->magic=VITA_HANDLE_MAGIC;h->kind=kind;h->uid=-1;}
+    if(h){h->magic=VITA_HANDLE_MAGIC;h->kind=kind;h->uid=-1;if(!register_handle(h)){free(h);h=NULL;}}
     else SetLastError(ERROR_NOT_ENOUGH_MEMORY);
     return h;
 }
 static struct vita_handle *get_handle(HANDLE value,int kind) {
-    struct vita_handle *h=(struct vita_handle*)value;
-    if(!h||value==INVALID_HANDLE_VALUE||h->magic!=VITA_HANDLE_MAGIC||(kind&&h->kind!=kind)){
+    struct vita_handle *h=(struct vita_handle*)value;int i,found=0;
+    if(!h||value==INVALID_HANDLE_VALUE){SetLastError(ERROR_INVALID_HANDLE);return NULL;}
+    for(i=0;i<VITA_MAX_HANDLES;i++)if(vita_handles[i]==h){found=1;break;}
+    if(!found||h->magic!=VITA_HANDLE_MAGIC||(kind&&h->kind!=kind)){
         SetLastError(ERROR_INVALID_HANDLE);return NULL;
     }
     return h;
 }
 
 static void translate_path(const char *guest_path,char *vita,unsigned int size) {
+    if (!guest_path) { if (size) vita[0] = 0; return; }
+    if (strncmp(guest_path, "ux0:", 4) == 0 || strncmp(guest_path, "app0:", 5) == 0 ||
+        strncmp(guest_path, "ur0:", 4) == 0 || strncmp(guest_path, "uma0:", 5) == 0) {
+        snprintf(vita, size, "%s", guest_path);
+        for (char *p = vita; *p; p++) if (*p == '\\') *p = '/';
+        return;
+    }
     char save_root[48];const char *tail=guest_path;const char *root="ux0:data/halo";
-    if(guest_path&&guest_path[0]&&guest_path[1]==':'){
+    char *p;
+    if(guest_path[0]&&guest_path[1]==':'){
         char drive=(char)(guest_path[0]|32);tail=guest_path+2;
         if(drive!='d'){
             snprintf(save_root,sizeof(save_root),"ux0:data/halo-vita/%c",drive);
@@ -101,7 +128,11 @@ static void translate_path(const char *guest_path,char *vita,unsigned int size) 
     }
     while(*tail=='/'||*tail=='\\')tail++;
     snprintf(vita,size,"%s/%s",root,tail);
-    for(char *p=vita;*p;p++)if(*p=='\\')*p='/';
+    for(p=vita;*p;p++)if(*p=='\\')*p='/';
+    {
+        size_t len = strlen(vita);
+        while (len > 13 && vita[len-1] == '/') { vita[len-1] = '\0'; len--; }
+    }
 }
 
 HANDLE WINAPI CreateFileA(LPCSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES security,
@@ -122,7 +153,7 @@ HANDLE WINAPI CreateFileA(LPCSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIB
     h=new_handle(VITA_FILE);if(!h)return INVALID_HANDLE_VALUE;
     h->file=fopen(path,mode);
     snprintf(h->path,sizeof(h->path),"%s",path);
-    if(!h->file){free(h);SetLastError(ERROR_FILE_NOT_FOUND);return INVALID_HANDLE_VALUE;}
+    if(!h->file){discard_handle(h);SetLastError(ERROR_FILE_NOT_FOUND);return INVALID_HANDLE_VALUE;}
     SetLastError(exists&&(disposition==OPEN_ALWAYS||disposition==CREATE_ALWAYS)?ERROR_ALREADY_EXISTS:ERROR_SUCCESS);return h;
 }
 BOOL WINAPI CloseHandle(HANDLE value) {
@@ -136,7 +167,7 @@ BOOL WINAPI CloseHandle(HANDLE value) {
          * running thread instead of freeing the record under its entry point. */
         if(sceKernelDeleteThread(h->uid)<0){SetLastError(ERROR_BUSY);return FALSE;}
     }
-    h->magic=0;free(h);return TRUE;
+    discard_handle(h);return TRUE;
 }
 static unsigned long long request_offset(LPOVERLAPPED o){return ((unsigned long long)o->OffsetHigh<<32)|o->Offset;}
 BOOL WINAPI ReadFile(HANDLE value,LPVOID buffer,DWORD count,LPDWORD done,LPOVERLAPPED o) {
@@ -181,13 +212,14 @@ DWORD WINAPI SetFilePointer(HANDLE value,LONG low,PLONG high,DWORD method){
 }
 DWORD WINAPI GetFileSize(HANDLE value,LPDWORD high){
     struct vita_handle *h=get_handle(value,VITA_FILE);long here,end;if(!h)return INVALID_FILE_SIZE;
+    if(fflush(h->file)){SetLastError(ERROR_GEN_FAILURE);return INVALID_FILE_SIZE;}
     here=ftell(h->file);fseek(h->file,0,SEEK_END);end=ftell(h->file);fseek(h->file,here,SEEK_SET);
     if(high)*high=0;return (DWORD)end;
 }
 BOOL WINAPI DeleteFileA(LPCSTR name){char p[VITA_PATH_MAX];translate_path(name,p,sizeof(p));return sceIoRemove(p)>=0;}
 BOOL WINAPI CreateDirectoryA(LPCSTR name,LPSECURITY_ATTRIBUTES unused){char p[VITA_PATH_MAX];(void)unused;translate_path(name,p,sizeof(p));return sceIoMkdir(p,0777)>=0;}
 BOOL WINAPI RemoveDirectoryA(LPCSTR name){char p[VITA_PATH_MAX];translate_path(name,p,sizeof(p));return sceIoRmdir(p)>=0;}
-DWORD WINAPI GetFileAttributesA(LPCSTR name){char p[VITA_PATH_MAX];SceIoStat s;translate_path(name,p,sizeof(p));if(sceIoGetstat(p,&s)<0)return INVALID_FILE_ATTRIBUTES;return SCE_S_ISDIR(s.st_mode)?FILE_ATTRIBUTE_DIRECTORY:FILE_ATTRIBUTE_NORMAL;}
+DWORD WINAPI GetFileAttributesA(LPCSTR name){char p[VITA_PATH_MAX];SceIoStat s;translate_path(name,p,sizeof(p));if(sceIoGetstat(p,&s)<0){SetLastError(ERROR_FILE_NOT_FOUND);return INVALID_FILE_ATTRIBUTES;}return SCE_S_ISDIR(s.st_mode)?FILE_ATTRIBUTE_DIRECTORY:FILE_ATTRIBUTE_NORMAL;}
 BOOL WINAPI GetFileAttributesExA(LPCSTR name,GET_FILEEX_INFO_LEVELS level,LPVOID output){
     char p[VITA_PATH_MAX];SceIoStat s;WIN32_FILE_ATTRIBUTE_DATA*d=output;(void)level;translate_path(name,p,sizeof(p));if(!d||sceIoGetstat(p,&s)<0)return FALSE;memset(d,0,sizeof(*d));d->dwFileAttributes=SCE_S_ISDIR(s.st_mode)?FILE_ATTRIBUTE_DIRECTORY:FILE_ATTRIBUTE_NORMAL;d->nFileSizeLow=(DWORD)s.st_size;d->nFileSizeHigh=(DWORD)((unsigned long long)s.st_size>>32);return TRUE;
 }
@@ -248,19 +280,19 @@ HANDLE WINAPI FindFirstFileA(LPCSTR pattern,LPWIN32_FIND_DATAA output){
     if(!slash)return INVALID_HANDLE_VALUE;
     h=new_handle(VITA_DIRECTORY);if(!h)return INVALID_HANDLE_VALUE;
     snprintf(h->path,sizeof(h->path),"%s",slash+1);*slash=0;h->uid=sceIoDopen(path);
-    if(h->uid<0||!read_directory_entry(h,output)){if(h->uid>=0)sceIoDclose(h->uid);free(h);return INVALID_HANDLE_VALUE;}return h;
+    if(h->uid<0||!read_directory_entry(h,output)){if(h->uid>=0)sceIoDclose(h->uid);discard_handle(h);return INVALID_HANDLE_VALUE;}return h;
 }
 BOOL WINAPI FindNextFileA(HANDLE value,LPWIN32_FIND_DATAA output){return read_directory_entry(get_handle(value,VITA_DIRECTORY),output);}
 
 HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES unused,BOOL manual,BOOL initial,LPCSTR name){
     struct vita_handle*h=new_handle(VITA_EVENT);(void)unused;if(!h)return NULL;h->manual_reset=manual;
-    h->uid=sceKernelCreateEventFlag(name?name:"halo-event",SCE_EVENT_WAITMULTIPLE,initial?1:0,NULL);if(h->uid<0){free(h);return NULL;}return h;
+    h->uid=sceKernelCreateEventFlag(name?name:"halo-event",SCE_EVENT_WAITMULTIPLE,initial?1:0,NULL);if(h->uid<0){discard_handle(h);return NULL;}return h;
 }
 BOOL WINAPI SetEvent(HANDLE value){struct vita_handle*h=get_handle(value,VITA_EVENT);return h&&sceKernelSetEventFlag(h->uid,1)>=0;}
 BOOL WINAPI ResetEvent(HANDLE value){struct vita_handle*h=get_handle(value,VITA_EVENT);return h&&sceKernelClearEventFlag(h->uid,0)>=0;}
 HANDLE WINAPI CreateMutexA(LPSECURITY_ATTRIBUTES unused,BOOL owner,LPCSTR name){
     struct vita_handle*h=new_handle(VITA_MUTEX);(void)unused;if(!h)return NULL;
-    h->uid=sceKernelCreateMutex(name?name:"halo-mutex",SCE_KERNEL_MUTEX_ATTR_RECURSIVE,owner?1:0,NULL);if(h->uid<0){free(h);return NULL;}return h;
+    h->uid=sceKernelCreateMutex(name?name:"halo-mutex",SCE_KERNEL_MUTEX_ATTR_RECURSIVE,owner?1:0,NULL);if(h->uid<0){discard_handle(h);return NULL;}return h;
 }
 BOOL WINAPI ReleaseMutex(HANDLE value){struct vita_handle*h=get_handle(value,VITA_MUTEX);return h&&sceKernelUnlockMutex(h->uid,1)>=0;}
 DWORD WINAPI WaitForSingleObjectEx(HANDLE value,DWORD ms,BOOL alertable){
@@ -282,7 +314,7 @@ BOOL WINAPI SwitchToThread(void){sceKernelDelayThread(0);return TRUE;}
 
 static int vita_thread_entry(SceSize argc,void *argument){struct vita_handle*h=argc>=sizeof(h)?*(struct vita_handle**)argument:NULL;DWORD result=0;if(h&&h->thread_start)result=h->thread_start(h->thread_parameter);if(h)h->exit_code=result;return (int)result;}
 HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES unused,DWORD stack,LPTHREAD_START_ROUTINE start,LPVOID parameter,DWORD flags,LPDWORD thread_id){
-    struct vita_handle*h=new_handle(VITA_THREAD);(void)unused;if(!h)return NULL;h->thread_start=start;h->thread_parameter=parameter;h->exit_code=STILL_ACTIVE;h->uid=sceKernelCreateThread("halo-thread",vita_thread_entry,0x10000100,stack<0x10000?0x10000:stack,0,0,NULL);if(h->uid<0){free(h);return NULL;}if(thread_id)*thread_id=(DWORD)h->uid;if(!(flags&CREATE_SUSPENDED)){struct vita_handle*copy=h;if(sceKernelStartThread(h->uid,sizeof(copy),&copy)<0){sceKernelDeleteThread(h->uid);free(h);return NULL;}h->thread_started=1;}return h;
+    struct vita_handle*h=new_handle(VITA_THREAD);(void)unused;if(!h)return NULL;h->thread_start=start;h->thread_parameter=parameter;h->exit_code=STILL_ACTIVE;h->uid=sceKernelCreateThread("halo-thread",vita_thread_entry,0x10000100,stack<0x10000?0x10000:stack,0,0,NULL);if(h->uid<0){discard_handle(h);return NULL;}if(thread_id)*thread_id=(DWORD)h->uid;if(!(flags&CREATE_SUSPENDED)){struct vita_handle*copy=h;if(sceKernelStartThread(h->uid,sizeof(copy),&copy)<0){sceKernelDeleteThread(h->uid);discard_handle(h);return NULL;}h->thread_started=1;}return h;
 }
 DWORD WINAPI ResumeThread(HANDLE value){struct vita_handle*h=get_handle(value,VITA_THREAD);struct vita_handle*copy;if(!h)return (DWORD)-1;if(h->thread_started)return 0;copy=h;if(sceKernelStartThread(h->uid,sizeof(copy),&copy)<0)return (DWORD)-1;h->thread_started=1;return 1;}
 BOOL WINAPI GetExitCodeThread(HANDLE value,LPDWORD code){struct vita_handle*h=get_handle(value,VITA_THREAD);int status;if(!h||!code)return FALSE;if(sceKernelGetThreadExitStatus(h->uid,&status)>=0)h->exit_code=(DWORD)status;*code=h->exit_code;return TRUE;}
@@ -301,7 +333,13 @@ BOOL WINAPI SystemTimeToFileTime(CONST SYSTEMTIME*s,LPFILETIME f){
 VOID WINAPI GetSystemTime(LPSYSTEMTIME s){time_t now=time(NULL);struct tm*t=gmtime(&now);memset(s,0,sizeof(*s));if(t){s->wYear=t->tm_year+1900;s->wMonth=t->tm_mon+1;s->wDay=t->tm_mday;s->wDayOfWeek=t->tm_wday;s->wHour=t->tm_hour;s->wMinute=t->tm_min;s->wSecond=t->tm_sec;}}
 
 BOOL WINAPI VirtualProtect(LPVOID address,SIZE_T size,DWORD protect,PDWORD old){(void)address;(void)size;(void)old;(void)protect;SetLastError(ERROR_CALL_NOT_IMPLEMENTED);return FALSE;}
-VOID WINAPI OutputDebugStringA(LPCSTR text){if(text)fprintf(stderr,"%s",text);}
+VOID WINAPI OutputDebugStringA(LPCSTR text){
+    if(text){
+        fprintf(stderr,"%s",text);
+        FILE *f = fopen("ux0:data/halo/boot.log", "a");
+        if (f) { fprintf(f, "%s", text); fclose(f); }
+    }
+}
 
 struct global_block {SIZE_T size;unsigned char data[1];};
 HGLOBAL WINAPI GlobalAlloc(UINT flags,SIZE_T size){
@@ -321,3 +359,168 @@ HGLOBAL WINAPI GlobalReAlloc(HGLOBAL value,SIZE_T size,UINT flags){
 }
 HLOCAL WINAPI LocalFree(HLOCAL value){if(value)free((char*)value-offsetof(struct global_block,data));return NULL;}
 SIZE_T WINAPI LocalSize(HLOCAL value){struct global_block*b=value?(struct global_block*)((char*)value-offsetof(struct global_block,data)):NULL;return b?b->size:0;}
+
+#ifndef ERROR_FILE_EXISTS
+#define ERROR_FILE_EXISTS 80L
+#endif
+
+BOOL WINAPI CopyFileA(LPCSTR existing, LPCSTR new_file, BOOL fail_if_exists) {
+    char src[VITA_PATH_MAX], dst[VITA_PATH_MAX];
+    SceUID fd_in, fd_out;
+    SceIoStat stat;
+    char buffer[4096];
+    int n;
+    if(!existing || !new_file) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    translate_path(existing, src, sizeof(src));
+    translate_path(new_file, dst, sizeof(dst));
+    if(fail_if_exists && sceIoGetstat(dst, &stat) >= 0) {
+        SetLastError(ERROR_FILE_EXISTS);
+        return FALSE;
+    }
+    fd_in = sceIoOpen(src, SCE_O_RDONLY, 0);
+    if(fd_in < 0) { SetLastError(ERROR_FILE_NOT_FOUND); return FALSE; }
+    fd_out = sceIoOpen(dst, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if(fd_out < 0) { sceIoClose(fd_in); SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    while((n = sceIoRead(fd_in, buffer, sizeof(buffer))) > 0) {
+        if(sceIoWrite(fd_out, buffer, n) != n) {
+            sceIoClose(fd_in); sceIoClose(fd_out);
+            SetLastError(ERROR_GEN_FAILURE);
+            return FALSE;
+        }
+    }
+    sceIoClose(fd_in);
+    sceIoClose(fd_out);
+    return TRUE;
+}
+
+BOOL WINAPI MoveFileA(LPCSTR existing, LPCSTR new_file) {
+    char src[VITA_PATH_MAX], dst[VITA_PATH_MAX];
+    if(!existing || !new_file) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    translate_path(existing, src, sizeof(src));
+    translate_path(new_file, dst, sizeof(dst));
+    if(sceIoRename(src, dst) >= 0) return TRUE;
+    if(CopyFileA(existing, new_file, FALSE)) {
+        DeleteFileA(existing);
+        return TRUE;
+    }
+    SetLastError(ERROR_GEN_FAILURE);
+    return FALSE;
+}
+
+BOOL WINAPI SetEndOfFile(HANDLE value) {
+    struct vita_handle *h = get_handle(value, VITA_FILE);
+    long length;
+    SceIoStat stat;
+    if(!h || !h->file) return FALSE;
+    length = ftell(h->file);
+    if(length < 0) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if(fflush(h->file)) { SetLastError(ERROR_GEN_FAILURE); return FALSE; }
+    memset(&stat, 0, sizeof(stat));
+    stat.st_size = (SceOff)length;
+    if(sceIoChstat(h->path, &stat, SCE_CST_SIZE) < 0) {
+        SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
+    clearerr(h->file);
+    if(fseek(h->file, length, SEEK_SET)) {
+        SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
+    SetLastError(ERROR_SUCCESS);
+    return TRUE;
+}
+
+BOOL WINAPI GetDiskFreeSpaceExA(LPCSTR dir, PULARGE_INTEGER free_bytes, PULARGE_INTEGER total_bytes, PULARGE_INTEGER total_free) {
+    (void)dir;
+    if(free_bytes) free_bytes->QuadPart = 1024ULL * 1024ULL * 1024ULL * 4ULL;
+    if(total_bytes) total_bytes->QuadPart = 1024ULL * 1024ULL * 1024ULL * 8ULL;
+    if(total_free) total_free->QuadPart = 1024ULL * 1024ULL * 1024ULL * 4ULL;
+    return TRUE;
+}
+
+VOID WINAPI GlobalMemoryStatus(LPMEMORYSTATUS lpBuffer) {
+    if(!lpBuffer) return;
+    memset(lpBuffer, 0, sizeof(*lpBuffer));
+    lpBuffer->dwLength = sizeof(*lpBuffer);
+    lpBuffer->dwMemoryLoad = 50;
+    lpBuffer->dwTotalPhys = 128 * 1024 * 1024;
+    lpBuffer->dwAvailPhys = 64 * 1024 * 1024;
+    lpBuffer->dwTotalPageFile = 128 * 1024 * 1024;
+    lpBuffer->dwAvailPageFile = 64 * 1024 * 1024;
+    lpBuffer->dwTotalVirtual = 128 * 1024 * 1024;
+    lpBuffer->dwAvailVirtual = 64 * 1024 * 1024;
+}
+
+DWORD WINAPI XGetLanguage(void) {
+    return 1; /* XC_LANGUAGE_ENGLISH */
+}
+
+DWORD WINAPI XGetLaunchInfo(PDWORD launch_type, struct _LAUNCH_DATA *launch_data) {
+    if(launch_type) *launch_type = 0;
+    (void)launch_data;
+    return 0;
+}
+
+void * WINAPI XCalculateSignatureBegin(DWORD flags) { (void)flags; return (void*)1; }
+DWORD WINAPI XCalculateSignatureUpdate(void *handle, const BYTE *data, DWORD size) { (void)handle; (void)data; (void)size; return 0; }
+DWORD WINAPI XCalculateSignatureEnd(void *handle, struct _XCALCSIG_SIGNATURE *signature) { (void)handle; if(signature) memset(signature, 0, sizeof(*signature)); return 0; }
+
+DWORD WINAPI XCreateSaveGame(LPCSTR root, LPCWSTR name, DWORD disposition, DWORD flags, char *path, UINT path_size) {
+    (void)root; (void)name; (void)disposition; (void)flags;
+    if(path && path_size) snprintf(path, path_size, "ux0:data/halo/save");
+    return 0;
+}
+
+DWORD WINAPI XDeleteSaveGame(LPCSTR root, LPCWSTR name) { (void)root; (void)name; return 0; }
+void * WINAPI XFindFirstSaveGame(LPCSTR root, struct _XGAME_FIND_DATA *find_data) { (void)root; (void)find_data; return (void*)-1; }
+BOOL WINAPI XFindNextSaveGame(void *search, struct _XGAME_FIND_DATA *find_data) { (void)search; (void)find_data; return FALSE; }
+BOOL WINAPI XFindClose(void *search) { (void)search; return TRUE; }
+BOOL WINAPI XSetNicknameW(LPCWSTR name, BOOL flush) { (void)name; (void)flush; return TRUE; }
+void * WINAPI XFindFirstNicknameW(int flags, unsigned short *search, unsigned int data) { (void)flags; (void)search; (void)data; return (void*)-1; }
+DWORD WINAPI XLaunchNewImageA(LPCSTR image_path, struct _LAUNCH_DATA *launch_data) { (void)image_path; (void)launch_data; return 0; }
+
+long halo_screen_width(void) { return 960; }
+long halo_screen_commit(void) { return 960; }
+void halo_screen_ui_offset(unsigned char centered) { (void)centered; }
+int halo_interpolation_enabled(void) { return 1; }
+int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer) { (void)menus_active; (void)pointer; return 0; }
+
+void _ReadWriteBarrier(void) {
+    __asm__ __volatile__("" ::: "memory");
+}
+
+void platform_log(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+
+    FILE *f = fopen("ux0:data/halo/boot.log", "a");
+    if (f) {
+        va_start(args, format);
+        vfprintf(f, format, args);
+        fprintf(f, "\n");
+        va_end(args);
+        fclose(f);
+    }
+}
+
+void platform_show_message(const char *title, const char *message) {
+    (void)title;
+    (void)message;
+}
+
+const char *config_string(const char *name) {
+    if (name && strcmp(name, "network.netcode") == 0) return "distributed";
+    return "";
+}
+
+double config_real(const char *name) {
+    if (name && strcmp(name, "audio.volume") == 0) return 1.0;
+    return 0.0;
+}
+
+void test_input_hold_action(int hold) {
+    (void)hold;
+}

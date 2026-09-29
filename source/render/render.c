@@ -173,6 +173,27 @@ boolean render_particles_enabled = TRUE;
 boolean render_particle_systems_enabled = TRUE;
 boolean render_weather_particle_systems_enabled = TRUE;
 
+#ifdef HALO_VITA
+static boolean vita_trace_first_render = TRUE;
+
+static void vita_render_log(unsigned long line)
+{
+	FILE *log;
+
+	if (!vita_trace_first_render)
+		return;
+	log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		fprintf(log, "render: checkpoint %lu\n", line);
+		fclose(log);
+	}
+}
+#define VITA_RENDER_LOG(message) vita_render_log(__LINE__)
+#else
+#define VITA_RENDER_LOG(message) ((void)0)
+#endif
+
 /* ---------- public code */
 
 void render_effects(
@@ -214,6 +235,7 @@ static void render_nonplayer_frame(
 {
 	struct rasterizer_window_begin_parameters parameters;
 
+	VITA_RENDER_LOG("nonplayer: entry");
 	profile_render_window_start(FALSE);
 	memset(&parameters, 0, sizeof(parameters));
 
@@ -222,11 +244,13 @@ static void render_nonplayer_frame(
 
 	parameters.camera = window->rasterizer_camera;
 	render_camera_build_frustum(&parameters.camera, NULL, &parameters.frustum, TRUE);
+	VITA_RENDER_LOG("nonplayer: frustums ok");
 
 	parameters.rasterizer_target = _render_target_primary;
 	parameters.suppress_clear = window_type == 0;
 	parameters.window_index = NONE;
 	rasterizer_window_begin(&parameters);
+	VITA_RENDER_LOG("nonplayer: rasterizer_window_begin ok");
 
 	switch (window_type)
 	{
@@ -356,22 +380,36 @@ static void render_window(
 	parameters.window_index = render.window_index;
 	parameters.fog = render.fog;
 
+	VITA_RENDER_LOG("window: structure_visibility_compute begin");
 	structure_visibility_compute();
+	VITA_RENDER_LOG("window: structure_visibility_compute ok");
 	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+	VITA_RENDER_LOG("window: screen flash ok");
 	rasterizer_window_begin(&parameters);
+	VITA_RENDER_LOG("window: rasterizer_window_begin ok");
 
 	if (!bink_playback_in_progress())
 	{
 		build_sprite_prepare_for_window();
+		VITA_RENDER_LOG("window: sprite preparation ok");
 		render_sky();
+		VITA_RENDER_LOG("window: sky ok");
 		first_person_weapon_render_update();
+		VITA_RENDER_LOG("window: first person weapon ok");
 		lights_preprocess_scene();
+		VITA_RENDER_LOG("window: lights preprocess ok");
 		render_objects();
+		VITA_RENDER_LOG("window: objects ok");
 		structure_render_preprocess();
+		VITA_RENDER_LOG("window: structure preprocess ok");
 		structure_render_lightmaps();
+		VITA_RENDER_LOG("window: structure lightmaps ok");
 		rasterizer_lens_flares_submit_occlusion_tests();
+		VITA_RENDER_LOG("window: lens flare tests ok");
 		render_object_shadows();
+		VITA_RENDER_LOG("window: object shadows ok");
 		lights_render_diffuse();
+		VITA_RENDER_LOG("window: diffuse lights ok");
 
 		rasterizer_decals_begin(_decal_layer_light);
 		for (rendered_cluster_index = 0;
@@ -381,6 +419,7 @@ static void render_window(
 			rasterizer_decals_draw(rendered_cluster_get(rendered_cluster_index)->cluster_index);
 		}
 		rasterizer_decals_end();
+		VITA_RENDER_LOG("window: light decals ok");
 
 		rasterizer_decals_begin(_decal_layer_alpha_tested);
 		for (rendered_cluster_index = 0;
@@ -390,8 +429,10 @@ static void render_window(
 			rasterizer_decals_draw(rendered_cluster_get(rendered_cluster_index)->cluster_index);
 		}
 		rasterizer_decals_end();
+		VITA_RENDER_LOG("window: alpha decals ok");
 
 		structure_render_diffuse_texture();
+		VITA_RENDER_LOG("window: structure diffuse texture ok");
 
 		rasterizer_decals_begin(_decal_layer_primary);
 		for (rendered_cluster_index = 0;
@@ -401,6 +442,7 @@ static void render_window(
 			rasterizer_decals_draw(rendered_cluster_get(rendered_cluster_index)->cluster_index);
 		}
 		rasterizer_decals_end();
+		VITA_RENDER_LOG("window: primary decals ok");
 
 		rasterizer_decals_begin(_decal_layer_secondary);
 		for (rendered_cluster_index = 0;
@@ -410,20 +452,34 @@ static void render_window(
 			rasterizer_decals_draw(rendered_cluster_get(rendered_cluster_index)->cluster_index);
 		}
 		rasterizer_decals_end();
+		VITA_RENDER_LOG("window: secondary decals ok");
 
 		lights_render_specular();
+		VITA_RENDER_LOG("window: specular lights ok");
 		structure_render_specular_lightmaps();
+		VITA_RENDER_LOG("window: specular lightmaps ok");
 		structure_render_reflection_lightmap_masks();
+		VITA_RENDER_LOG("window: reflection masks ok");
 		structure_render_reflection_mirrors();
+		VITA_RENDER_LOG("window: reflection mirrors ok");
 		structure_render_reflections();
+		VITA_RENDER_LOG("window: reflections ok");
 		structure_render_transparent_geometry();
+		VITA_RENDER_LOG("window: transparent structure ok");
 		structure_render_fog();
+		VITA_RENDER_LOG("window: structure fog ok");
 		game_engine_post_rasterize_objects();
+		VITA_RENDER_LOG("window: game engine objects ok");
 		weather_particle_systems_render();
+		VITA_RENDER_LOG("window: weather particles ok");
 		render_particles();
+		VITA_RENDER_LOG("window: particles ok");
 		particle_systems_render();
+		VITA_RENDER_LOG("window: particle systems ok");
 		render_contrails_normal();
+		VITA_RENDER_LOG("window: contrails ok");
 		rasterizer_transparent_geometry_draw(TRUE);
+		VITA_RENDER_LOG("window: transparent geometry first pass ok");
 
 		rasterizer_decals_begin(_decal_layer_water);
 		for (rendered_cluster_index = 0;
@@ -433,29 +489,45 @@ static void render_window(
 			rasterizer_decals_draw(rendered_cluster_get(rendered_cluster_index)->cluster_index);
 		}
 		rasterizer_decals_end();
+		VITA_RENDER_LOG("window: water decals ok");
 
 		structure_render_detail_objects();
+		VITA_RENDER_LOG("window: detail objects ok");
 		rasterizer_transparent_geometry_draw(FALSE);
+		VITA_RENDER_LOG("window: transparent geometry second pass ok");
 		rasterizer_transparent_geometry_stop();
+		VITA_RENDER_LOG("window: transparent geometry stop ok");
 		structure_render_fog_screen();
+		VITA_RENDER_LOG("window: fog screen ok");
 		rasterizer_lens_flares_draw();
+		VITA_RENDER_LOG("window: lens flares draw ok");
 		interface_draw_screen();
+		VITA_RENDER_LOG("window: interface screen ok");
 		rasterizer_screen_flash();
+		VITA_RENDER_LOG("window: screen flash draw ok");
 #ifdef HALO_LINUX
 		halo_screen_ui_offset(TRUE);
 		render_ui_widgets(local_player_index, &rasterizer_camera->viewport_bounds);
 		halo_screen_ui_offset(FALSE);
 #else
 		render_ui_widgets(local_player_index, &rasterizer_camera->viewport_bounds);
+		VITA_RENDER_LOG("window: UI widgets ok");
 #endif
 	}
 
 	bink_playback_render();
+	VITA_RENDER_LOG("window: bink render ok");
 	render_camera_debug_frustum(&render.camera, &render.frustum);
+	VITA_RENDER_LOG("window: camera debug ok");
 	render_debug();
+	VITA_RENDER_LOG("window: render debug ok");
 	editor_render();
+	VITA_RENDER_LOG("window: editor render ok");
 	rasterizer_debug_draw();
+	VITA_RENDER_LOG("window: rasterizer debug ok");
 	rasterizer_window_end();
+	VITA_RENDER_LOG("nonplayer: rasterizer_window_end ok");
+	VITA_RENDER_LOG("window: rasterizer_window_end ok");
 	profile_render_window_end();
 
 	return;
@@ -475,14 +547,20 @@ static void render_player_frame(
 	camera = &window->render_camera;
 	has_mirror = FALSE;
 
+	VITA_RENDER_LOG("player: visibility camera begin");
 	structure_visibility_find_camera(camera);
+	VITA_RENDER_LOG("player: visibility camera ok");
 	render.fog.runtime_flags = 0;
+	VITA_RENDER_LOG("player: atmospheric fog begin");
 	scenario_get_atmospheric_fog(
 		window->local_player_index,
 		(word)render.visible_sky_index,
 		&camera->position,
 		&render.fog);
+	VITA_RENDER_LOG("player: atmospheric fog ok");
+	VITA_RENDER_LOG("player: planar fog begin");
 	structure_get_planar_fog((short)render.cluster_index, &render.fog);
+	VITA_RENDER_LOG("player: planar fog ok");
 
 	if (render.fog.atmospheric_maximum_distance != 0.0f &&
 		render.visible_sky_index == NONE &&
@@ -531,6 +609,7 @@ static void render_player_frame(
 			&window->rasterizer_camera.window_bounds,
 			sizeof(rectangle2d)));
 
+	VITA_RENDER_LOG("player: camera/frustum setup begin");
 	render_camera_build_frustum_bounds(camera, &frustum_bounds);
 
 	if (screenshot_combined_index != NULL)
@@ -562,7 +641,9 @@ static void render_player_frame(
 		&frustum_bounds,
 		&rasterizer_frustum,
 		TRUE);
+	VITA_RENDER_LOG("player: camera/frustum setup ok");
 
+	VITA_RENDER_LOG("player: mirror test begin");
 	if (main_get_window_count() == 1)
 	{
 		if (structure_visibility_find_mirror(camera, &frustum, &mirror))
@@ -599,7 +680,9 @@ static void render_player_frame(
 			has_mirror = TRUE;
 		}
 	}
+	VITA_RENDER_LOG("player: mirror test ok");
 
+	VITA_RENDER_LOG("player: render_window begin");
 	render_window(
 		window->local_player_index,
 		camera,
@@ -608,6 +691,7 @@ static void render_player_frame(
 		&rasterizer_frustum,
 		_render_target_primary,
 		has_mirror);
+	VITA_RENDER_LOG("player: render_window ok");
 
 	return;
 }
@@ -625,6 +709,7 @@ void render_frame(
 	struct render_window *window;
 	point2d screenshot_combined_index;
 
+	VITA_RENDER_LOG("frame: entry");
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 	memset(&parameters, 0, sizeof(parameters));
@@ -634,13 +719,17 @@ void render_frame(
 #else
 	parameters.game_time_sec = (real)game_time_get() * (1.0f / TICKS_PER_SECOND);
 #endif
+	VITA_RENDER_LOG("frame: rasterizer_frame_begin begin");
 	rasterizer_frame_begin(&parameters);
+	VITA_RENDER_LOG("frame: rasterizer_frame_begin ok");
 	rasterizer_windows_begin();
+	VITA_RENDER_LOG("frame: rasterizer_windows_begin ok");
 
 	for (window_index = 0; window_index < window_count; window_index++)
 	{
 		long window_type;
 
+		VITA_RENDER_LOG("frame: window begin");
 		window = &windoze[window_index];
 		render.window_index = window_index;
 		if (window->console_window)
@@ -657,6 +746,7 @@ void render_frame(
 					screenshot_page_index->y * global_screenshot_size + screenshot_index->y;
 			}
 
+			VITA_RENDER_LOG("frame: player window dispatch");
 			render_player_frame(
 				window,
 				screenshot_index != NULL ? &screenshot_combined_index : NULL);
@@ -667,7 +757,9 @@ void render_frame(
 			window_type = 1;
 		}
 
+		VITA_RENDER_LOG("frame: nonplayer window dispatch");
 		render_nonplayer_frame(window, window_type);
+		VITA_RENDER_LOG("frame: nonplayer window ok");
 	}
 
 #ifdef HALO_LINUX
@@ -675,10 +767,18 @@ void render_frame(
 	progress_bar_eachframe();
 	halo_screen_ui_offset(FALSE);
 #else
+	VITA_RENDER_LOG("frame: progress bar begin");
 	progress_bar_eachframe();
+	VITA_RENDER_LOG("frame: progress bar ok");
 #endif
 	rasterizer_windows_end();
+	VITA_RENDER_LOG("frame: rasterizer_windows_end ok");
 	rasterizer_frame_end();
+	VITA_RENDER_LOG("frame: rasterizer_frame_end ok");
+
+#ifdef HALO_VITA
+	vita_trace_first_render = FALSE;
+#endif
 
 	return;
 }

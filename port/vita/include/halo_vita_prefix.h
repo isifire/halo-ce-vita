@@ -4,6 +4,8 @@
 #error Vita game units require ARMv7 with 32-bit pointers
 #endif
 #define HALO_VITA 1
+#define _WINSOCKAPI_ 1
+#define __thread
 #include "halo_linux_prefix.h"
 /* Newlib pulls limits.h into these headers; Halo uses enum constants with
  * these names. Load the headers before clearing just the conflicting macros. */

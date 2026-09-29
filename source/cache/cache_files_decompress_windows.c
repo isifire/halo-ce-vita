@@ -519,6 +519,23 @@ static long performance_frequency = 1;
 
 static boolean decompressor_print_timing;
 
+#ifdef HALO_VITA
+static void vita_cache_boot_log(const char *format, ...)
+{
+	va_list arguments;
+	FILE *file = fopen("ux0:data/halo/boot.log", "a");
+	if (!file)
+		return;
+	va_start(arguments, format);
+	vfprintf(file, format, arguments);
+	va_end(arguments);
+	fputc('\n', file);
+	fclose(file);
+}
+#else
+#define vita_cache_boot_log(...) ((void)0)
+#endif
+
 /* ---------- code */
 
 static boolean cache_copy_stop_requested(
@@ -562,8 +579,12 @@ void cache_copy_begin(
 	long destination_file_size,
 	const char *source_file_name)
 {
+	vita_cache_boot_log("cache_copy_begin: entry buffer=%p size=%ld destination=%p expected=%ld source=%s",
+		buffer, size, destination_file, destination_file_size,
+		source_file_name ? source_file_name : "(null)");
 	if (WaitForSingleObject(global_self->copy_complete_event, 0) == 0)
 	{
+		vita_cache_boot_log("cache_copy_begin: previous session complete");
 		match_assert(
 			"c:\\halo\\SOURCE\\cache\\cache_files_decompress_windows.c",
 			524,
@@ -616,18 +637,24 @@ void cache_copy_begin(
 			538,
 			global_self->zlib_stream.zfree);
 
+		vita_cache_boot_log("cache_copy_begin: contracts validated");
 		global_self->flags = 0;
 		global_self->allocated_buffer = buffer;
-		csstrcpy(global_self->src_name, source_file_name);
+		csstrncpy(global_self->src_name, source_file_name, sizeof(global_self->src_name) - 1);
+		global_self->src_name[sizeof(global_self->src_name) - 1] = 0;
 		global_self->destination_file = destination_file;
 		global_self->read_progress = 0.0f;
+		vita_cache_boot_log("cache_copy_begin: request state stored");
 
 		ResetEvent(global_self->copy_complete_event);
 		ResetEvent(global_self->copy_stop_event);
+		vita_cache_boot_log("cache_copy_begin: events reset");
 
 		csmemset(&global_self->header, 0, sizeof(global_self->header));
+		vita_cache_boot_log("cache_copy_begin: header cleared");
 
 		SetEvent(global_self->copy_start_event);
+		vita_cache_boot_log("cache_copy_begin: worker signalled");
 	}
 	else
 	{
@@ -1654,21 +1681,36 @@ static unsigned long __stdcall simple_cache_copy_thread(
 {
 	struct simple_decompressor_definition *self = global_self;
 
+#ifdef HALO_VITA
+#define VITA_CACHE_LOG(message) do { \
+	vita_cache_boot_log("cache_copy_thread: %s", (message)); \
+} while (FALSE)
+#else
+#define VITA_CACHE_LOG(message) ((void)0)
+#endif
+
+	VITA_CACHE_LOG("thread started");
+
 	for (;;)
 	{
 		WaitForSingleObject(self->copy_start_event, INFINITE);
+		VITA_CACHE_LOG("copy request received");
 
 		decompressor_reset_timing();
 		decompressor_timer_start(_decompressor_timer_copying);
 
 		cache_copy_initialize_read_buffers(self);
+		VITA_CACHE_LOG("buffers initialized");
 		cache_copy_initialize_file_data(self);
+		VITA_CACHE_LOG("source file opened");
 
 		if (!cache_copy_stop_requested())
 		{
 			decompressor_timer_start(_decompressor_timer_setup);
 			cache_copy_initialize_read_data(self);
+			VITA_CACHE_LOG("cache header read");
 			cache_copy_initialize_zlib(self);
+			VITA_CACHE_LOG("zlib initialized");
 			decompressor_timer_stop(_decompressor_timer_setup);
 
 			if (cache_file_header_verify(&self->header, "cache decompressed", TRUE))
@@ -1679,6 +1721,7 @@ static unsigned long __stdcall simple_cache_copy_thread(
 				self->async_write_bytes_left = self->write_bytes_left;
 
 				cache_copy_issue_initial_reads(self);
+				VITA_CACHE_LOG("initial reads issued");
 
 				while (!cache_copy_stop_requested() && self->write_bytes_left > 0 && keep_going)
 				{
@@ -1766,6 +1809,7 @@ static unsigned long __stdcall simple_cache_copy_thread(
 		}
 
 		cache_copy_wait_for_async_io(self);
+		VITA_CACHE_LOG("asynchronous I/O drained");
 
 		CloseHandle(self->source_file);
 		self->source_file = NULL;
@@ -1774,6 +1818,7 @@ static unsigned long __stdcall simple_cache_copy_thread(
 
 		self->destination_file = NULL;
 		SetEvent(self->copy_complete_event);
+		VITA_CACHE_LOG("copy completed");
 	}
 
 	return 0;

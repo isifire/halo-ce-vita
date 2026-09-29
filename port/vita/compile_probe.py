@@ -53,8 +53,9 @@ def main():
         '-Wno-error=incompatible-pointer-types', '-Wno-error=incompatible-function-pointer-types',
         '-Wno-error=implicit-int', '-Wno-error=return-type', '-ferror-limit=8',
         '-include', 'port/vita/include/halo_vita_prefix.h', '-include', str(semantics),
-        '-Iport/vita/include', '-Iport/linux/include', '-Isource', '-Isource/cseries',
-        '-isystem', 'port/include/xdk', '-isystem', str(args.sdk.resolve() / 'arm-vita-eabi/include')]
+        '-Iport/vita/include', '-Iport/linux/include', '-Iport/linux/game', '-Isource', '-Isource/cseries',
+        '-isystem', 'port/include/xdk', '-isystem', str(args.sdk.resolve() / 'arm-vita-eabi/include'),
+        '-Igpu-hard/arm-vita-eabi/include']
     config = json.loads((ROOT / 'config/config.json').read_text())
     project = next(p for p in config['projects'] if p['name'] == 'halobetacache')
     flags += ['-I' + d for d in project['options']['include_dirs'] if d != 'xbox/include']
@@ -68,6 +69,16 @@ def main():
         sources += ['port/vita/src/xapi_memory.c', 'port/vita/src/xapi_platform.c']
         sources += ['port/linux/src/halo_linker_common.c']
         sources += ['port/vita/src/xinput_vita.c']
+        sources += ['port/vita/src/arena.c', 'port/vita/src/memory_vita.c']
+        sources += ['port/vita/src/bink_null.c', 'port/vita/src/xbdm.c']
+        sources += ['port/vita/src/msvc_crt_vita.c', 'port/vita/src/msvc_wide_vita.c']
+        sources += ['port/vita/src/d3d8_vitagl.c']
+        sources += ['port/vita/src/dsound_vita.c', 'port/vita/src/xnet_vita.c']
+        sources += ['port/linux/game/render_interpolation.c']
+        sources += ['port/linux/game/network_damage.c', 'port/linux/game/network_distributed.c',
+                    'port/linux/game/network_objects.c', 'port/linux/game/network_test.c']
+        for p in sorted((ROOT / 'port/third_party/musl-math/src').glob('*.c')):
+            sources.append(p.relative_to(ROOT).as_posix())
         absent = [s for s in sources if not (ROOT / s).is_file()]
         (out / 'absent-sources.json').write_text(json.dumps(absent, indent=2))
         sources = [s for s in sources if (ROOT / s).is_file()]
@@ -79,9 +90,16 @@ def main():
         name = source.replace('/', '__').replace(' ', '_')[:-2] if args.all else Path(source).stem
         obj = out / (name + ('.ll' if args.emit_ir else '.o'))
         mode = ['-O0', '-S', '-emit-llvm'] if args.emit_ir else ['-c']
-        source_flags = [*flags]
-        if source in VARIADIC_PROTOTYPE_FILES:
-            source_flags += ['-include', 'port/vita/include/halo_vita_variadic_prototypes.h']
+        if source.startswith('port/third_party/musl-math'):
+            source_flags = [
+                '--target=arm-none-eabihf', '-mcpu=cortex-a9', '-mfpu=neon', '-mfloat-abi=hard',
+                '-std=gnu11', '-w', '-O2', '-ffunction-sections', '-fdata-sections', '-fshort-wchar',
+                '-Iport/third_party/musl-math/include', '-include', 'port/third_party/musl-math/include/libm.h'
+            ]
+        else:
+            source_flags = [*flags]
+            if source in VARIADIC_PROTOTYPE_FILES:
+                source_flags += ['-include', 'port/vita/include/halo_vita_variadic_prototypes.h']
         result = subprocess.run([args.clang, *source_flags, *mode, source, '-o', str(obj)],
                                 cwd=ROOT, capture_output=True, text=True)
         (out / (name + '.log')).write_text(result.stdout + result.stderr, encoding='utf-8')

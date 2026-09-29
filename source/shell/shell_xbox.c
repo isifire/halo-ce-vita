@@ -106,20 +106,65 @@ shell_idle(
 int main(
 	void)
 {
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) { fprintf(f_diag, "main(): entry\n"); fclose(f_diag); }
+	}
+#endif
 	fuck_code_in_the_eye();
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) { fprintf(f_diag, "main(): calling rasterizer_preinitialize\n"); fclose(f_diag); }
+	}
+#endif
 	rasterizer_preinitialize__fill_you_up_with_the_devils_cock();
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) { fprintf(f_diag, "main(): calling physical_memory_allocate\n"); fclose(f_diag); }
+	}
+#endif
 	physical_memory_allocate();
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) { fprintf(f_diag, "main(): calling shell_initialize\n"); fclose(f_diag); }
+	}
+#endif
 
 	__try
 	{
 		if (shell_initialize())
 		{
+#ifdef HALO_VITA
+			{
+				FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+				if (f_diag) { fprintf(f_diag, "main(): shell_initialize SUCCESS, calling main_loop\n"); fclose(f_diag); }
+			}
+#endif
 			main_loop();
 			shell_dispose();
+		}
+		else
+		{
+#ifdef HALO_VITA
+			{
+				FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+				if (f_diag) { fprintf(f_diag, "main(): shell_initialize FAILED!\n"); fclose(f_diag); }
+			}
+#endif
 		}
 	}
 	__except (generic_exception_filter(GetExceptionCode(), GetExceptionInformation()))
 	{
+#ifdef HALO_VITA
+		{
+			FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+			if (f_diag) { fprintf(f_diag, "main(): EXCEPTION caught in generic_exception_filter!\n"); fclose(f_diag); }
+		}
+#endif
 		halt_and_catch_fire();
 	}
 
@@ -132,6 +177,9 @@ void
 fuck_code_in_the_eye(
 	void)
 {
+#ifdef HALO_VITA
+	return;
+#else
 	DWORD flOldProtect;
 	PDM_WALK_MODSECT walk_modsect;
 	DMN_SECTIONLOAD section_load;
@@ -157,6 +205,7 @@ fuck_code_in_the_eye(
 			}
 		}
 	}
+#endif
 
 	return;
 }

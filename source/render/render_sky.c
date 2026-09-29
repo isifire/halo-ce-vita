@@ -26,6 +26,9 @@ symbols in this file:
 #include "models/models.h"
 #include "objects/objects.h"
 #include "scenario/scenario.h"
+#ifdef HALO_VITA
+#include "cache/physical_memory_map.h"
+#endif
 
 /* ---------- constants */
 
@@ -88,6 +91,59 @@ void rasterizer_models_end(
 
 real render_sky_globals[MAXIMUM_SKIES_PER_SCENARIO] = {0.f};
 
+#ifdef HALO_VITA
+#define VITA_TAG_CACHE_BYTES 0x01600000UL
+
+static void vita_sky_log(
+	unsigned long line,
+	struct sky const *sky,
+	struct model const *model)
+{
+	FILE *log = fopen("ux0:data/halo/boot.log", "a");
+
+	if (log)
+	{
+		fprintf(log,
+			"render_sky: checkpoint=%lu sky=%p model=%p nodes=%ld/%p animations=%ld/%p regions=%ld/%p lights=%ld/%p\n",
+			line,
+			sky,
+			model,
+			model ? model->nodes.count : -1,
+			model ? model->nodes.address : NULL,
+			sky ? sky->animations.count : -1,
+			sky ? sky->animations.address : NULL,
+			sky ? sky->render_model_regions.count : -1,
+			sky ? sky->render_model_regions.address : NULL,
+			sky ? sky->lights.count : -1,
+			sky ? sky->lights.address : NULL);
+		fclose(log);
+	}
+}
+
+static boolean vita_sky_block_valid(
+	struct tag_block const *block,
+	unsigned long element_size,
+	unsigned long maximum_count)
+{
+	byte const *base = (byte const *)physical_memory_get_tag_cache_base_address();
+	byte const *address;
+	unsigned long bytes;
+
+	if (!base || !block || block->count < 0 ||
+		(unsigned long)block->count > maximum_count)
+		return FALSE;
+	if (block->count == 0)
+		return TRUE;
+	address = (byte const *)block->address;
+	bytes = (unsigned long)block->count * element_size;
+	return address >= base && bytes <= VITA_TAG_CACHE_BYTES &&
+		(unsigned long)(address - base) <= VITA_TAG_CACHE_BYTES - bytes;
+}
+#define VITA_SKY_LOG(sky, model) vita_sky_log(__LINE__, (sky), (model))
+#else
+#define VITA_SKY_LOG(sky, model) ((void)0)
+#endif
+
 /* ---------- public code */
 
 void render_sky(
@@ -104,6 +160,10 @@ void render_sky(
 	struct animation_graph *animation_graph;
 	short i;
 
+	sky = NULL;
+	model = NULL;
+	VITA_SKY_LOG(sky, model);
+
 	if (render.visible_sky_model)
 	{
 		match_assert(
@@ -114,12 +174,32 @@ void render_sky(
 		if (render.visible_sky_model)
 		{
 			sky = scenario_get_sky(render.visible_sky_index);
+			VITA_SKY_LOG(sky, model);
 			model = model_definition_get(sky->model.index);
+			VITA_SKY_LOG(sky, model);
+#ifdef HALO_VITA
+			/* A malformed linked block must not be allowed to walk off the
+			 * relocated tag cache during the first rendered frame. */
+			if (!vita_sky_block_valid(&model->nodes,
+					sizeof(struct model_node), MAXIMUM_NODES_PER_ANIMATION) ||
+				!vita_sky_block_valid(&sky->animations,
+					sizeof(struct sky_animation), MAXIMUM_SKIES_PER_SCENARIO) ||
+				!vita_sky_block_valid(&sky->render_model_regions,
+					sizeof(struct sky_render_model_region), MAXIMUM_SKIES_PER_SCENARIO) ||
+				!vita_sky_block_valid(&sky->lights,
+					sizeof(struct sky_light), 64))
+			{
+				vita_sky_log(__LINE__, sky, model);
+				return;
+			}
+#endif
 			model_get_node_orientations(model, node_orientations);
+			VITA_SKY_LOG(sky, model);
 
 			if (sky->animation_graph.index != NONE)
 			{
 				animation_graph = animation_graph_definition_get(sky->animation_graph.index);
+				VITA_SKY_LOG(sky, model);
 				for (i = 0; i < sky->animations.count; i++)
 				{
 					struct sky_animation *sky_animation = TAG_BLOCK_GET_ELEMENT(
@@ -150,6 +230,7 @@ void render_sky(
 					}
 				}
 			}
+			VITA_SKY_LOG(sky, model);
 
 			model_node_matrices_from_orientations(
 				model,
@@ -158,6 +239,7 @@ void render_sky(
 				global_origin3d,
 				global_forward3d,
 				global_up3d);
+			VITA_SKY_LOG(sky, model);
 
 			for (i = 0; i < sky->render_model_regions.count; i++)
 			{
@@ -167,6 +249,7 @@ void render_sky(
 					struct sky_render_model_region);
 				region_scales[i] = 1.f;
 			}
+			VITA_SKY_LOG(sky, model);
 
 			for (i = 0; i < sky->lights.count; i++)
 			{
@@ -228,6 +311,7 @@ void render_sky(
 			next_light:
 				;
 			}
+			VITA_SKY_LOG(sky, model);
 
 			view_matrix = *global_identity4x3;
 			view_matrix.position.x = render.camera.position.x * 0.9990234375f;
@@ -248,6 +332,7 @@ void render_sky(
 			}
 
 			rasterizer_models_begin(TRUE);
+			VITA_SKY_LOG(sky, model);
 			csmemset(&render_model_lighting, 0, sizeof(render_model_lighting));
 			render_model_lighting.ambient_color = *global_real_rgb_white;
 			render_model(
@@ -264,7 +349,9 @@ void render_sky(
 				0,
 				0,
 				TRUE);
+			VITA_SKY_LOG(sky, model);
 			rasterizer_models_end();
+			VITA_SKY_LOG(sky, model);
 		}
 	}
 

@@ -242,6 +242,153 @@ char const *data_00316820[] =
 	NULL
 };
 
+#ifdef HALO_VITA
+#define XBOX_GAME_STATE_BASE 0x80061000UL
+#define XBOX_GAME_STATE_SIZE 0x00345000UL
+#define XBOX_TAG_CACHE_BASE  0x803A6000UL
+#define XBOX_TAG_CACHE_SIZE  0x01600000UL
+
+static void cache_file_rebase_vita_region(
+	void *region,
+	unsigned long region_bytes,
+	unsigned long tag_delta,
+	unsigned long state_delta,
+	unsigned long *tag_rebased,
+	unsigned long *high_tag_rebased,
+	unsigned long *state_rebased)
+{
+	unsigned long *words = (unsigned long *)region;
+	unsigned long word_count = region_bytes / sizeof(*words);
+	unsigned long index;
+
+	for (index = 0; index < word_count; index++)
+	{
+		unsigned long value = words[index];
+
+		if (!(value & 3) && value >= XBOX_TAG_CACHE_BASE &&
+			value < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+		{
+			if (value >= XBOX_TAG_CACHE_BASE + region_bytes)
+				(*high_tag_rebased)++;
+			words[index] = value + tag_delta;
+			(*tag_rebased)++;
+		}
+		else if (!(value & 3) && value >= XBOX_GAME_STATE_BASE &&
+			value < XBOX_GAME_STATE_BASE + XBOX_GAME_STATE_SIZE)
+		{
+			words[index] = value + state_delta;
+			(*state_rebased)++;
+		}
+	}
+}
+
+static boolean cache_file_rebase_vita_pointers(void *tag_cache, unsigned long tag_bytes)
+{
+	struct cache_file_tag_header *header = (struct cache_file_tag_header *)tag_cache;
+	struct cache_file_tag_instance *instances;
+	unsigned long tag_delta = (unsigned long)tag_cache - XBOX_TAG_CACHE_BASE;
+	unsigned long state_base = (unsigned long)physical_memory_get_game_state_base_address();
+	unsigned long state_delta = state_base - XBOX_GAME_STATE_BASE;
+	unsigned long tag_rebased = 0;
+	unsigned long high_tag_bases = 0;
+	unsigned long state_rebased = 0;
+	unsigned long index;
+	FILE *log;
+
+	if (!tag_cache || !state_base || !tag_bytes || tag_bytes > XBOX_TAG_CACHE_SIZE)
+		return FALSE;
+	if (header->tag_count <= 0 || header->tag_count > 65535 ||
+		(unsigned long)header->tag_instances < XBOX_TAG_CACHE_BASE ||
+		(unsigned long)header->tag_instances >= XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+		return FALSE;
+
+	/* The tag array and individual tag path/data fields are known pointers.
+	 * Some stock Xbox UI tags live near the top of the complete 22 MiB tag
+	 * window even though the serialized tag-data payload is much smaller.
+	 * Relocate these structural fields against the complete window instead
+	 * of treating them as arbitrary words in the payload. */
+	header->tag_instances = (struct cache_file_tag_instance *)
+		((unsigned long)header->tag_instances + tag_delta);
+	tag_rebased++;
+	instances = header->tag_instances;
+	if ((unsigned long)header->tag_count >
+			tag_bytes / sizeof(*instances) ||
+		(byte *)instances < (byte *)tag_cache ||
+		(byte *)instances > (byte *)tag_cache + tag_bytes -
+			header->tag_count * sizeof(*instances))
+		return FALSE;
+
+	for (index = 0; index < (unsigned long)header->tag_count; index++)
+	{
+		unsigned long value = (unsigned long)instances[index].name;
+		if (value >= XBOX_TAG_CACHE_BASE &&
+			value < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+		{
+			instances[index].name = (char *)(value + tag_delta);
+			tag_rebased++;
+		}
+
+		value = (unsigned long)instances[index].base_address;
+		if (value >= XBOX_TAG_CACHE_BASE &&
+			value < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+		{
+			if (value >= XBOX_TAG_CACHE_BASE + tag_bytes)
+				high_tag_bases++;
+			instances[index].base_address = (void *)(value + tag_delta);
+			tag_rebased++;
+		}
+	}
+
+	if ((unsigned long)header->vertex_buffers >= XBOX_TAG_CACHE_BASE &&
+		(unsigned long)header->vertex_buffers < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+	{
+		header->vertex_buffers = (void *)((unsigned long)header->vertex_buffers + tag_delta);
+		tag_rebased++;
+	}
+	if ((unsigned long)header->index_buffers >= XBOX_TAG_CACHE_BASE &&
+		(unsigned long)header->index_buffers < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+	{
+		header->index_buffers = (void *)((unsigned long)header->index_buffers + tag_delta);
+		tag_rebased++;
+	}
+
+	/* Xbox cache data is a linked in-memory image.  Pointers stored in the
+	 * serialized tag payload may target any part of the complete 22 MiB tag
+	 * window, not merely the bytes present in the initial tag-data chunk.
+	 * In particular, scenario BSP destinations live near the top of that
+	 * window.  Leaving those addresses untouched makes the Vita stream the
+	 * BSP into an unrelated Xbox-era virtual address and corrupts globals. */
+	cache_file_rebase_vita_region(
+		tag_cache,
+		tag_bytes,
+		tag_delta,
+		state_delta,
+		&tag_rebased,
+		&high_tag_bases,
+		&state_rebased);
+
+	log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		fprintf(log, "tag_rebase: tag_base=%p tag_bytes=%lu tag_pointers=%lu high_tag_pointers=%lu state_pointers=%lu\n",
+			tag_cache, tag_bytes, tag_rebased, high_tag_bases, state_rebased);
+		fclose(log);
+	}
+
+	return tag_rebased > 0;
+}
+
+static boolean cache_file_vita_tag_pointer_valid(void const *pointer, unsigned long bytes)
+{
+	byte const *base = (byte const *)physical_memory_get_tag_cache_base_address();
+	byte const *value = (byte const *)pointer;
+	unsigned long tag_bytes = XBOX_TAG_CACHE_SIZE;
+
+	return base && value && value >= base && bytes <= tag_bytes &&
+		(unsigned long)(value - base) <= tag_bytes - bytes;
+}
+#endif
+
 /* ---------- private code */
 
 static struct cache_file_tag_instance *cache_get_tag_instance(
@@ -392,8 +539,19 @@ long tag_loaded(
 			absolute_index < cache_file_globals.tag_header->tag_count;
 			absolute_index++)
 		{
+			char const *instance_name = global_tag_instances[absolute_index].name;
+#ifdef HALO_VITA
+			if (!cache_file_vita_tag_pointer_valid(instance_name, 1) ||
+				!memchr(instance_name, 0,
+					XBOX_TAG_CACHE_SIZE -
+					(unsigned long)((byte const *)instance_name -
+						(byte const *)physical_memory_get_tag_cache_base_address())))
+			{
+				continue;
+			}
+#endif
 			if (group_tag == global_tag_instances[absolute_index].group_tag &&
-				!_stricmp(name, global_tag_instances[absolute_index].name))
+				!_stricmp(name, instance_name))
 			{
 				result = global_tag_instances[absolute_index].tag_index;
 				break;
@@ -407,7 +565,11 @@ long tag_loaded(
 void cache_files_enable_writes(
 	void)
 {
+#ifdef HALO_VITA
+	XPhysicalProtect(physical_memory_get_tag_cache_base_address(), 0x01600000, PAGE_READWRITE);
+#else
 	XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READWRITE);
+#endif
 
 	return;
 }
@@ -415,7 +577,11 @@ void cache_files_enable_writes(
 void cache_files_disable_writes(
 	void)
 {
+#ifdef HALO_VITA
+	XPhysicalProtect(physical_memory_get_tag_cache_base_address(), 0x01600000, PAGE_READONLY);
+#else
 	XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READONLY);
+#endif
 	XPhysicalProtect(
 		cache_file_globals.tag_header->vertex_buffers,
 		cache_file_globals.tag_header->vertex_buffer_count * 12,
@@ -694,6 +860,13 @@ long scenario_tags_load(
 					'a',
 					'g',
 					's'));
+#ifdef HALO_VITA
+			match_vassert(
+				"c:\\halo\\SOURCE\\cache\\cache_files.c",
+				0x94,
+				cache_file_rebase_vita_pointers(tag_cache_base_address, cache_file_globals.header.tag_data_size),
+				"Vita tag pointer rebase failed");
+#endif
 			global_tag_instances = cache_file_globals.tag_header->tag_instances;
 			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
 			cache_file_globals.tags_loaded = TRUE;
@@ -709,8 +882,28 @@ boolean scenario_structure_bsp_load(
 {
 	struct cache_file_tag_instance *tag_instance;
 	byte *tag_cache_base_address;
+#ifdef HALO_VITA
+	unsigned long bsp_tag_rebased = 0;
+	unsigned long bsp_high_tag_rebased = 0;
+	unsigned long bsp_state_rebased = 0;
+	unsigned long tag_delta;
+	unsigned long state_delta;
+	FILE *vita_log;
+#endif
 
 	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
+#ifdef HALO_VITA
+	match_vassert(
+		"c:\\halo\\SOURCE\\cache\\cache_files.c",
+		0xD1,
+		reference->file_size > 0 &&
+		cache_file_vita_tag_pointer_valid(reference->base_address,
+			(unsigned long)reference->file_size),
+		csprintf(temporary,
+			"BSP destination %p (%ld bytes) was not rebased into the Vita tag cache",
+			reference->base_address,
+			reference->file_size));
+#endif
 	csmemset(
 		tag_cache_base_address + cache_file_globals.header.tag_data_size,
 		0xCD,
@@ -734,6 +927,35 @@ boolean scenario_structure_bsp_load(
 			}
 		}
 	}
+
+#ifdef HALO_VITA
+	/* The BSP is another Xbox linked-memory image.  It is read after the
+	 * initial tag rebase, so translate its internal pointers separately once
+	 * the asynchronous read has completed. */
+	tag_delta = (unsigned long)tag_cache_base_address - XBOX_TAG_CACHE_BASE;
+	state_delta = (unsigned long)physical_memory_get_game_state_base_address() -
+		XBOX_GAME_STATE_BASE;
+	cache_file_rebase_vita_region(
+		reference->base_address,
+		reference->file_size,
+		tag_delta,
+		state_delta,
+		&bsp_tag_rebased,
+		&bsp_high_tag_rebased,
+		&bsp_state_rebased);
+	vita_log = fopen("ux0:data/halo/boot.log", "a");
+	if (vita_log)
+	{
+		fprintf(vita_log,
+			"bsp_rebase: destination=%p bytes=%ld tag_pointers=%lu high_tag_pointers=%lu state_pointers=%lu\n",
+			reference->base_address,
+			reference->file_size,
+			bsp_tag_rebased,
+			bsp_high_tag_rebased,
+			bsp_state_rebased);
+		fclose(vita_log);
+	}
+#endif
 
 	cache_file_globals.structure_bsp_header = reference->base_address;
 	match_assert(
@@ -803,6 +1025,14 @@ void *tag_get(
 		tag_instance->base_address,
 		csprintf(temporary, "can't get() a tag with a base address!")
 	);
+#ifdef HALO_VITA
+	match_vassert(
+		"c:\\halo\\SOURCE\\cache\\cache_files.c",
+		303,
+		cache_file_vita_tag_pointer_valid(tag_instance->base_address, 1),
+		csprintf(temporary, "tag %08x has an out-of-range Vita base address %p",
+			tag_index, tag_instance->base_address));
+#endif
 	
 	return tag_instance->base_address;
 }

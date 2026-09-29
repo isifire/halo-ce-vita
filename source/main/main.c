@@ -712,6 +712,22 @@ boolean display_vblank_deltas = FALSE;
 boolean display_precache_progress = FALSE;
 struct _screenshot_and_framerate_globals global_screenshot_count = { 0 };
 
+#ifdef HALO_VITA
+static void vita_game_render_checkpoint(unsigned long line)
+{
+	FILE *log = fopen("ux0:data/halo/boot.log", "a");
+
+	if (log)
+	{
+		fprintf(log, "main_game_render: checkpoint %lu\n", line);
+		fclose(log);
+	}
+}
+#define VITA_GAME_RENDER_LOG(message) vita_game_render_checkpoint(__LINE__)
+#else
+#define VITA_GAME_RENDER_LOG(message) ((void)0)
+#endif
+
 /* ---------- public code */
 
 real main_get_seconds_elapsed(
@@ -2850,6 +2866,15 @@ void main_framerate_render(
 void halt_and_catch_fire(
 	void)
 {
+#ifdef HALO_VITA
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "halt_and_catch_fire: halting execution\n");
+			fclose(f_diag);
+		}
+	}
+#endif
 	short gamepad_index;
 	long font_tag_index;
 	struct scenario *scenario;
@@ -2995,14 +3020,18 @@ void main_game_render(
 	long player_window_count;
 	long window_count;
 	short last_local_player_index;
-
+	VITA_GAME_RENDER_LOG("entry");
 	lock_global_random_seed();
+	VITA_GAME_RENDER_LOG("random seed locked");
 	collision_log_continue_period(TRUE);
+	VITA_GAME_RENDER_LOG("collision period started");
 	sound_render();
+	VITA_GAME_RENDER_LOG("sound_render ok");
 	force_single_screen = game_engine_force_single_screen();
 	last_local_player_index = NONE;
 
 	window_count = PIN(local_player_count(), 1, MAXIMUM_LOCAL_PLAYERS);
+	VITA_GAME_RENDER_LOG("window count resolved");
 	player_window_count = window_count;
 	if (force_single_screen || cinematic_in_progress())
 	{
@@ -3012,6 +3041,7 @@ void main_game_render(
 
 	for (window_index = 0; window_index < player_window_count; window_index++)
 	{
+		VITA_GAME_RENDER_LOG("player window setup begin");
 		window = &global_screenshot_count.windows[window_index];
 		observer = NULL;
 
@@ -3020,6 +3050,7 @@ void main_game_render(
 			player_window_count,
 			&window->rasterizer_camera.viewport_bounds,
 			&window->rasterizer_camera.window_bounds);
+		VITA_GAME_RENDER_LOG("player window bounds ok");
 		if (force_single_screen)
 		{
 			window->local_player_index = NONE;
@@ -3041,6 +3072,7 @@ void main_game_render(
 
 			window->local_player_index = last_local_player_index;
 			observer = observer_get_camera(window->local_player_index);
+			VITA_GAME_RENDER_LOG("player observer acquired");
 #ifdef HALO_LINUX
 			observer = render_interpolation_camera(window->local_player_index, observer);
 #endif
@@ -3051,9 +3083,11 @@ void main_game_render(
 		}
 
 		set_window_camera_values(window, observer);
+		VITA_GAME_RENDER_LOG("player camera values ok");
 		window->console_window = FALSE;
 	}
 
+	VITA_GAME_RENDER_LOG("console window setup begin");
 	window = &global_screenshot_count.windows[player_window_count];
 	compute_window_bounds(
 		0,
@@ -3063,9 +3097,11 @@ void main_game_render(
 	window->local_player_index = NONE;
 	window->console_window = TRUE;
 	set_window_camera_values(window, NULL);
+	VITA_GAME_RENDER_LOG("console window setup ok");
 
 	if (global_screenshot_count.count <= 0)
 	{
+		VITA_GAME_RENDER_LOG("render_frame begin");
 		render_frame(
 			global_screenshot_count.windows,
 			player_window_count + 1,
@@ -3073,6 +3109,7 @@ void main_game_render(
 			NULL,
 			main_globals.movie,
 			(real)time_delta_since_tick_sec);
+		VITA_GAME_RENDER_LOG("render_frame ok");
 	}
 	else
 	{
@@ -3081,6 +3118,7 @@ void main_game_render(
 
 	collision_log_end_period();
 	unlock_global_random_seed();
+	VITA_GAME_RENDER_LOG("complete");
 	return;
 }
 
@@ -3089,6 +3127,22 @@ void main_loop(
 {
 	boolean render_frame;
 	long connection;
+#ifdef HALO_VITA
+	boolean vita_first_frame = TRUE;
+#endif
+
+#ifdef HALO_VITA
+#define VITA_MAIN_LOG(message) do { \
+	FILE *vita_log_file = fopen("ux0:data/halo/boot.log", "a"); \
+	if (vita_log_file) { fprintf(vita_log_file, "main_loop: %s\n", (message)); fclose(vita_log_file); } \
+} while (FALSE)
+#define VITA_FRAME_LOG(message) do { if (vita_first_frame) VITA_MAIN_LOG(message); } while (FALSE)
+#else
+#define VITA_MAIN_LOG(message) ((void)0)
+#define VITA_FRAME_LOG(message) ((void)0)
+#endif
+
+	VITA_MAIN_LOG("entry");
 
 	if (!game_in_editor())
 	{
@@ -3101,14 +3155,21 @@ void main_loop(
 	main_globals.halt_time_scale = TRUE;
 
 	console_initialize();
+	VITA_MAIN_LOG("console_initialize ok");
 	debug_keys_initialize();
+	VITA_MAIN_LOG("debug_keys_initialize ok");
 	game_initialize();
+	VITA_MAIN_LOG("game_initialize ok");
 	console_startup();
+	VITA_MAIN_LOG("console_startup ok");
 	main_setup_connection();
+	VITA_MAIN_LOG("main_setup_connection ok");
 	main_initialize_time();
+	VITA_MAIN_LOG("main_initialize_time ok; entering frame loop");
 
 	while (TRUE)
 	{
+		VITA_FRAME_LOG("frame 0 begin");
 		if (!game_in_editor())
 		{
 			if (main_globals.switch_to_structure_bsp_index!=NONE)
@@ -3196,16 +3257,25 @@ void main_loop(
 			main_reset_map_private();
 		}
 
+		VITA_FRAME_LOG("frame 0 state changes complete");
 		profile_frame_start();
+		VITA_FRAME_LOG("frame 0 profile_frame_start ok");
 		input_frame_begin();
+		VITA_FRAME_LOG("frame 0 input_frame_begin ok");
 		input_update();
+		VITA_FRAME_LOG("frame 0 input_update ok");
 		input_abstraction_update();
+		VITA_FRAME_LOG("frame 0 input_abstraction_update ok");
 		shell_idle();
+		VITA_FRAME_LOG("frame 0 shell_idle ok");
 		event_manager_update();
+		VITA_FRAME_LOG("frame 0 event_manager_update ok");
 		telnet_console_process();
+		VITA_FRAME_LOG("frame 0 telnet_console_process ok");
 
 		if (!shell_application_is_paused())
 		{
+			VITA_FRAME_LOG("frame 0 application active");
 			render_frame = TRUE;
 
 #ifdef HALO_LINUX
@@ -3243,8 +3313,11 @@ void main_loop(
 			}
 
 			main_update_time();
+			VITA_FRAME_LOG("frame 0 main_update_time ok");
 			process_ui_widgets();
+			VITA_FRAME_LOG("frame 0 process_ui_widgets ok");
 			bink_playback_update();
+			VITA_FRAME_LOG("frame 0 bink_playback_update ok");
 
 			if ((!game_in_editor() && (input_key_is_down(_key_end) || input_key_is_down(_key_escape))) || editor_should_exit())
 			{
@@ -3258,13 +3331,17 @@ void main_loop(
 
 			if (game_in_progress())
 			{
+				VITA_FRAME_LOG("frame 0 game_in_progress true");
 				terminal_update();
+				VITA_FRAME_LOG("frame 0 terminal_update ok");
 
 				if (!console_update() || main_globals.connection!=_game_connection_local)
 				{
+					VITA_FRAME_LOG("frame 0 console_update ok");
 					debug_keys_update();
 					cheats_update();
 					player_control_update((real)main_globals.halt_time_scale*main_globals.seconds_elapsed);
+					VITA_FRAME_LOG("frame 0 controls update ok");
 
 					connection = main_globals.connection;
 					if (connection>_game_connection_local && connection<=_game_connection_network_server && !network_game_client_end_frame())
@@ -3274,6 +3351,7 @@ void main_loop(
 					}
 
 					game_time_update((real)main_globals.halt_time_scale*main_globals.seconds_elapsed);
+					VITA_FRAME_LOG("frame 0 game_time_update ok");
 
 					render_frame = main_globals.main_menu_scenario_loaded ||
 						(main_globals.halt_time_scale &&
@@ -3287,9 +3365,12 @@ void main_loop(
 
 					collision_log_continue_period(1);
 					director_update((real)main_globals.halt_time_scale*main_globals.seconds_elapsed);
+					VITA_FRAME_LOG("frame 0 director_update ok");
 					observer_update((real)main_globals.halt_time_scale*main_globals.seconds_elapsed);
+					VITA_FRAME_LOG("frame 0 observer_update ok");
 					collision_log_end_period();
 					game_engine_update_non_deterministic((real)main_globals.halt_time_scale*main_globals.seconds_elapsed);
+					VITA_FRAME_LOG("frame 0 nondeterministic update ok");
 				}
 
 				if (main_globals.saving_map)
@@ -3299,6 +3380,7 @@ void main_loop(
 
 				if (render_frame && !debug_no_drawing)
 				{
+					VITA_FRAME_LOG("frame 0 main_game_render begin");
 					profile_render_start();
 #ifdef HALO_LINUX
 					render_interpolation_frame_begin();
@@ -3308,26 +3390,39 @@ void main_loop(
 					main_game_render((double)main_globals.seconds_elapsed);
 #endif
 					profile_render_end();
+					VITA_FRAME_LOG("frame 0 main_game_render ok");
 				}
 			}
 			else
 			{
+				VITA_FRAME_LOG("frame 0 main_pregame_render begin");
 				profile_render_start();
 				main_pregame_render();
 				profile_render_end();
+				VITA_FRAME_LOG("frame 0 main_pregame_render ok");
 			}
 
+			VITA_FRAME_LOG("frame 0 rasterizer throttle begin");
 			main_rasterizer_throttle();
+			VITA_FRAME_LOG("frame 0 rasterizer throttle ok");
 
 			if (render_frame && !debug_no_drawing)
 			{
+				VITA_FRAME_LOG("frame 0 present begin");
 				main_present_frame();
+				VITA_FRAME_LOG("frame 0 present ok");
 			}
 		}
 
 		input_frame_end();
+		VITA_FRAME_LOG("frame 0 input_frame_end ok");
 		profile_frame_end();
+		VITA_FRAME_LOG("frame 0 profile_frame_end ok");
 		main_frame_rate_debug();
+		VITA_FRAME_LOG("frame 0 complete");
+#ifdef HALO_VITA
+		vita_first_frame = FALSE;
+#endif
 
 		if (main_globals.restart_time)
 		{
