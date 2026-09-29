@@ -1,31 +1,52 @@
-# IDE folders
+# IDE and operating-system files
 .idea/
 .vs/
-
-# Caches
-__pycache__
-.mypy_cache
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+# Language and tool caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
 .cache/
-
-# Build files
+# CMake and compiler output
 build/
 projects/
 .ninja_*
 build.ninja
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
 *.vcxproj*
 *.sln*
-
-# decompctx output
-ctx.*
-*.ctx
-
-# Generated configs
-objdiff.json
-compile_commands.json
-
-# Miscellaneous
+*.o
+*.obj
+*.a
+*.elf
+*.velf
+*.self
 *.exe
 *.pdb
+*.out
+*.log
+*.rsp
+*.d
+# Vita packages
+*.vpk
+*.sfo
+eboot.bin
+param.sfo
+/*-build/
+/engine-audit-build*/
+# Decompiled-code tooling output
+ctx.*
+*.ctx
+objdiff.json
 *.idb
 *.i64
 *.id0
@@ -36,10 +57,35 @@ compile_commands.json
 *.bndb
 xbox/
 !source/**/xbox/
-
-# Locally extracted proprietary game data (never commit)
+# Proprietary game data
 assets/
 original/
-
-# CI build outputs (tools/ci_build.py)
+*.iso
+*.xiso
+*.map
+/a10-*.bin
+# Locally installed/downloaded Vita SDK and dependencies
+/sdk-extracted/
+/vdpm/
+/vita-headers/
+/vita-samples/
+/gpu-deps/
+/gpu-hard/
+/gpu-source/
+/*.pkg.tar.xz
+/vitasdk.tar.bz2
+/vdpm-seed.tar.bz2
+/vdpm-seed.sha256
+/vitagl-source.zip
+# Duplicate checkout; repository root is canonical
+/halo-ce-universal/
+# One-off extraction and prototype files
+/bitmap-preview/
+/gpu-assets.json
+/gpu-old-assets.json
+/*-test.c
+/package_core03.py
+/sdk-asset.json
+/vitagl-readme.md
+# CI output
 dist/
