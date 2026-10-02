@@ -103,7 +103,8 @@ def generate_vita_build(n: Writer, sln: Any) -> None:
     sdk = vita_sdk(sln)
     if not config_path.is_file() or not (VITA_DIR / "host").is_dir():
         return
-    if not (sdk / "bin" / "arm-vita-eabi-gcc").is_file():
+    gcc_bin = sdk / "bin" / ("arm-vita-eabi-gcc.exe" if os.name == "nt" else "arm-vita-eabi-gcc")
+    if not gcc_bin.is_file() and not (sdk / "bin" / "arm-vita-eabi-gcc").is_file():
         n.comment(f"Vita build: no VitaSDK at {sdk} (set VITASDK)")
         return
     config: Dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
@@ -174,9 +175,9 @@ def generate_vita_build(n: Writer, sln: Any) -> None:
     implicit = [*xdk_headers(), prefix_header, semantics_header, platform_semantics_header]
 
     def add(source: Path, rule: str, cflags: str) -> None:
-        obj = obj_dir / source.with_suffix(".o")
+        obj = (obj_dir / source.with_suffix(".o")).as_posix()
         (clang_objects if rule == "vita_cc" and lto else objects).append(obj)
-        n.build(outputs=obj, rule=rule, inputs=source, implicit=implicit if rule == "vita_cc" else [],
+        n.build(outputs=obj, rule=rule, inputs=source.as_posix(), implicit=[h.as_posix() if isinstance(h, Path) else h for h in (implicit if rule == "vita_cc" else [])],
                 variables={"cflags": cflags})
 
     # the game
@@ -189,7 +190,7 @@ def generate_vita_build(n: Writer, sln: Any) -> None:
             f"-I{_quote(d)}" for d in options.get("include_dirs") or [] if Path(d) != Path("xbox/include")
         )
         game_cflags = " ".join([
-            abi, " ".join(GAME_FLAGS), f"-include {prefix_header}", f"-include {semantics_header}",
+            abi, " ".join(GAME_FLAGS), f"-include {prefix_header.as_posix()}", f"-include {semantics_header.as_posix()}",
             defines, f"-I{vita_include}", f"-I{port_include}", includes, sdk_flags,
         ])
         for obj in proj.objects:
@@ -209,10 +210,12 @@ def generate_vita_build(n: Writer, sln: Any) -> None:
 
     # the platform layer shared with Linux, and the Vita's game-ABI parts of it
     platform_dir = Path(config["platform_sources"])
+    sdl_include = Path("build/windows/third_party/SDL3-3.4.16/include")
+    sdl_flag = f"-I{_quote(sdl_include)}" if sdl_include.is_dir() else ""
     platform_cflags = " ".join([
-        abi, " ".join(PLATFORM_FLAGS), "-w", f"-include {prefix_header}", f"-include {platform_semantics_header}",
+        abi, " ".join(PLATFORM_FLAGS), "-w", f"-include {prefix_header.as_posix()}", f"-include {platform_semantics_header.as_posix()}",
         f"-I{platform_dir}", f"-I{vita_include}", f"-I{port_include}", f"-I{TOML_DIR}", f"-I{KCP_DIR}",
-        "-Isource -Isource/cseries", sdk_flags,
+        "-Isource -Isource/cseries", sdk_flags, sdl_flag,
     ])
     for source in sorted(platform_dir.glob("*.c")):
         if source.name not in LINUX_SOURCES_REPLACED:
@@ -233,23 +236,23 @@ def generate_vita_build(n: Writer, sln: Any) -> None:
     add(LINUX_DIR / "src" / "posix_files.c", "vita_host_cc", host_cflags + " -D_GNU_SOURCE")
 
     if lto:
-        lto_object = BUILD / "halo_lto.o"
+        lto_object = (BUILD / "halo_lto.o").as_posix()
         n.build(outputs=lto_object, rule="vita_lto", inputs=clang_objects)
         objects.insert(0, lto_object)
-    elf = BUILD / "halo.elf"
-    velf = BUILD / "halo.velf"
-    eboot = BUILD / "eboot.bin"
-    sfo = BUILD / "param.sfo"
-    vpk = BUILD / "halo.vpk"
+    elf = (BUILD / "halo.elf").as_posix()
+    velf = (BUILD / "halo.velf").as_posix()
+    eboot = (BUILD / "eboot.bin").as_posix()
+    sfo = (BUILD / "param.sfo").as_posix()
+    vpk = (BUILD / "halo.vpk").as_posix()
     n.build(outputs=elf, rule="vita_link", inputs=objects,
             variables={"libs": " ".join(f"-l{lib}" for lib in VITA_LIBRARIES)})
     n.build(outputs=velf, rule="vita_velf", inputs=elf)
     n.build(outputs=eboot, rule="vita_eboot", inputs=velf)
-    n.build(outputs=sfo, rule="vita_sfo", implicit=[Path("tools/vita_build.py")])
+    n.build(outputs=sfo, rule="vita_sfo", implicit=[Path("tools/vita_build.py").as_posix()])
     assets = []
     for asset in sorted((VITA_DIR / "sce_sys").rglob("*")) if (VITA_DIR / "sce_sys").is_dir() else []:
         if asset.is_file():
-            assets.append(f"-a {_quote(asset)}={_quote(asset.relative_to(VITA_DIR))}")
+            assets.append(f"-a {_quote(asset.as_posix())}={_quote(asset.relative_to(VITA_DIR).as_posix())}")
     n.build(outputs=vpk, rule="vita_vpk", inputs=[eboot, sfo],
             variables={"sfo": str(sfo), "eboot": str(eboot), "assets": " ".join(assets)})
     n.build(outputs="vita", rule="phony", inputs=[vpk])

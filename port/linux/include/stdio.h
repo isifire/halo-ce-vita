@@ -8,6 +8,7 @@ Host <stdio.h> plus MSVC-named functions.
 #define __HALO_LINUX_STDIO_H
 
 #include <stdarg.h>
+#include <stddef.h>
 #include_next <stdio.h>
 
 int snprintf(char *buffer, size_t count, const char *format, ...);
