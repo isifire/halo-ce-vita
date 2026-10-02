@@ -44,3 +44,44 @@ original/
 # CI build outputs (tools/ci_build.py)
 dist/
 invader/
+
+# Local Vita SDK, downloaded packages, and dependency checkouts
+/sdk-extracted/
+/gpu-deps/
+/gpu-hard/
+/gpu-source/
+/vdpm/
+/vita-headers/
+/vita-samples/
+/halo-ce-universal/
+/*.pkg.tar.xz
+/vitasdk.tar.bz2
+/vdpm-seed.tar.bz2
+/vdpm-seed.sha256
+/vitagl-source.zip
+/vitagl-readme.md
+/gpu-assets.json
+/gpu-old-assets.json
+/sdk-asset.json
+
+# Local experiments/build products from the older VitaGL port
+/campaign-loader-build/
+/core-build/
+/diagnostic-build/
+/engine-audit-build/
+/engine-audit-build-2/
+/graphical-ui-build/
+/map-test-build/
+/tag-test-build/
+/ui-bootstrap-build/
+/ui-routes-build/
+/outputs/
+/collision-test.c
+/ground-test.c
+/raster-test.c
+/package_core03.py
+
+# Extracted map/bitmap data used for local diagnosis (not redistributable)
+/a10-first-bsp.bin
+/a10-tags.bin
+/bitmap-preview/
