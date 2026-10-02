@@ -1,9 +1,9 @@
 # Halo: Combat Evolved for the PS Vita
 
 A native PlayStation Vita port of **Halo: Combat Evolved**, built from the
-decompilation of the Xbox game. It is not an emulator: the game's own code
+decompilation of the Xbox game and based on the native LibGxm port by [BirchWoodGod](https://github.com/BirchWoodGod/halo-ce-vita). It is not an emulator: the game's own code
 is compiled for the Vita's ARM processor, and its Direct3D rendering is
-translated to the Vita's GPU.
+translated natively to the Vita's GPU.
 
 **No game data is included.** You need your own Xbox copy of Halo: Combat
 Evolved.
@@ -213,7 +213,7 @@ This port stands on a lot of other people's work:
 - **[Xita](https://github.com/Xita-Project/xita)**: the earlier work on running Halo on the Vita, whose
   findings (the register combiner translation, the GPU and threading
   lessons, the tools) went into this port.
-- **PS Vita port**: BirchWoodGod.
+- **PS Vita port & LibGxm backend**: [BirchWoodGod/halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita).
 
 Libraries and tools: [VitaSDK](https://vitasdk.org),
 [SDL3](https://github.com/libsdl-org/SDL) (desktop builds),
