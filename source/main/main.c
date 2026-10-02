@@ -703,6 +703,12 @@ static char const *scenario_paths[10] =
 };
 
 static struct _main_globals main_globals = { 0 };
+#ifdef HALO_VITA
+/* Resource teardown can exhaust/reuse the main-thread stack. Keep the pending
+ * campaign name out of that stack until game_load consumes it. */
+static char vita_pending_campaign_map[256];
+static struct game_options vita_pending_campaign_options;
+#endif
 boolean debug_force_frame_rate_update = FALSE;
 boolean debug_no_drawing = FALSE;
 boolean debug_game_save = FALSE;
@@ -715,12 +721,13 @@ struct _screenshot_and_framerate_globals global_screenshot_count = { 0 };
 #ifdef HALO_VITA
 static void vita_game_render_checkpoint(unsigned long line)
 {
-	FILE *log = fopen("ux0:data/halo/boot.log", "a");
-
-	if (log)
-	{
-		fprintf(log, "main_game_render: checkpoint %lu\n", line);
-		fclose(log);
+	static unsigned long s_render_log_count = 0;
+	if (s_render_log_count++ < 20) {
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "game_render: checkpoint line %lu\n", line);
+			fclose(f_diag);
+		}
 	}
 }
 #define VITA_GAME_RENDER_LOG(message) vita_game_render_checkpoint(__LINE__)
@@ -1199,7 +1206,28 @@ void main_present_frame(
 	struct file_reference reference;
 	char path[512];
 
+#ifdef HALO_VITA
+	static int s_mpf_trace = 0;
+	if (s_mpf_trace < 1) {
+		s_mpf_trace++;
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "main_present_frame #%d: calling render_frame_present\n", s_mpf_trace);
+			fclose(f_diag);
+		}
+	}
+#endif
 	render_frame_present(NULL, main_globals.movie);
+#ifdef HALO_VITA
+	if (s_mpf_trace == 1) {
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "main_present_frame #%d: render_frame_present returned ok\n", s_mpf_trace);
+			fclose(f_diag);
+		}
+		s_mpf_trace++;
+	}
+#endif
 	if (global_screenshot_count.count <= 0 && main_globals.movie)
 	{
 		_snprintf(
@@ -1429,6 +1457,12 @@ short main_get_window_count(
 static void main_new_map(
 	struct game_options *options)
 {
+#ifdef HALO_VITA
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log) { fprintf(log, "campaign_load: main_new_map options=%p map='%.255s'\n", options, options->map_name); fclose(log); }
+	}
+#endif
 	input_flush();
 	if (game_load(options))
 	{
@@ -1513,6 +1547,25 @@ static void main_change_map_name(
 			struct game_options options;
 			short local_player_index;
 
+			/* Keep the map name in persistent storage across cache/tag teardown.
+			 * The Vita log showed the automatic stack options struct intact after
+			 * precache but empty after game_unload(). */
+#ifdef HALO_VITA
+			csstrncpy(
+				vita_pending_campaign_map,
+				main_globals.soloplayer_map_name,
+				NUMBEROF(vita_pending_campaign_map) - 1);
+			vita_pending_campaign_map[NUMBEROF(vita_pending_campaign_map) - 1] = 0;
+			if (!vita_pending_campaign_map[0])
+			{
+				csstrncpy(vita_pending_campaign_map, "levels\\a10\\a10", NUMBEROF(vita_pending_campaign_map) - 1);
+				vita_pending_campaign_map[NUMBEROF(vita_pending_campaign_map) - 1] = 0;
+			}
+			{
+				FILE *log = fopen("ux0:data/halo/boot.log", "a");
+				if (log) { fprintf(log, "campaign_load: selected persistent map='%s'\n", vita_pending_campaign_map); fclose(log); }
+			}
+#else
 			game_options_new(&options);
 			csstrncpy(
 				options.map_name,
@@ -1520,10 +1573,35 @@ static void main_change_map_name(
 				NUMBEROF(options.map_name) - 1);
 			options.map_name[NUMBEROF(options.map_name) - 1] = 0;
 			options.difficulty = global_difficulty_level;
+#endif
 			game_dispose_from_old_map();
-			game_precache_new_map(options.map_name, TRUE);
+			game_precache_new_map(
+#ifdef HALO_VITA
+				vita_pending_campaign_map,
+#else
+				options.map_name,
+#endif
+				TRUE);
+#ifdef HALO_VITA
+			{
+				FILE *log = fopen("ux0:data/halo/boot.log", "a");
+				if (log) { fprintf(log, "campaign_load: after precache persistent map='%s'\n", vita_pending_campaign_map); fclose(log); }
+			}
+#endif
 			game_unload();
+#ifdef HALO_VITA
+			game_options_new(&vita_pending_campaign_options);
+			csstrncpy(vita_pending_campaign_options.map_name, vita_pending_campaign_map, NUMBEROF(vita_pending_campaign_options.map_name) - 1);
+			vita_pending_campaign_options.map_name[NUMBEROF(vita_pending_campaign_options.map_name) - 1] = 0;
+			vita_pending_campaign_options.difficulty = global_difficulty_level;
+			{
+				FILE *log = fopen("ux0:data/halo/boot.log", "a");
+				if (log) { fprintf(log, "campaign_load: after unload options=%p map='%.255s'\n", &vita_pending_campaign_options, vita_pending_campaign_options.map_name); fclose(log); }
+			}
+			main_new_map(&vita_pending_campaign_options);
+#else
 			main_new_map(&options);
+#endif
 
 			for (local_player_index = 0;
 				local_player_index < player_spawn_count;
@@ -2494,7 +2572,11 @@ void main_rasterizer_throttle(
 #ifdef HALO_LINUX
 	if (rasterizer_globals.framerate_throttle && !halo_interpolation_enabled())
 #else
+#ifdef HALO_VITA
+	if (0)
+#else
 	if (rasterizer_globals.framerate_throttle)
+#endif
 #endif
 	{
 		target_index = main_globals.rasterizer_target_index;
@@ -3122,6 +3204,26 @@ void main_game_render(
 	return;
 }
 
+#ifdef HALO_VITA
+static unsigned long vita_main_frame_index = 0;
+static void vita_frame_checkpoint_log(const char *msg)
+{
+	if (vita_main_frame_index == 0) {
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "frame %lu: %s time_ms=%lu\n", vita_main_frame_index, msg,
+				(unsigned long)system_milliseconds());
+			fclose(f_diag);
+		}
+	}
+}
+#define VITA_MAIN_LOG(message) vita_frame_checkpoint_log(message)
+#define VITA_FRAME_LOG(message) vita_frame_checkpoint_log(message)
+#else
+#define VITA_MAIN_LOG(message) ((void)0)
+#define VITA_FRAME_LOG(message) ((void)0)
+#endif
+
 void main_loop(
 	void)
 {
@@ -3129,17 +3231,6 @@ void main_loop(
 	long connection;
 #ifdef HALO_VITA
 	boolean vita_first_frame = TRUE;
-#endif
-
-#ifdef HALO_VITA
-#define VITA_MAIN_LOG(message) do { \
-	FILE *vita_log_file = fopen("ux0:data/halo/boot.log", "a"); \
-	if (vita_log_file) { fprintf(vita_log_file, "main_loop: %s\n", (message)); fclose(vita_log_file); } \
-} while (FALSE)
-#define VITA_FRAME_LOG(message) do { if (vita_first_frame) VITA_MAIN_LOG(message); } while (FALSE)
-#else
-#define VITA_MAIN_LOG(message) ((void)0)
-#define VITA_FRAME_LOG(message) ((void)0)
 #endif
 
 	VITA_MAIN_LOG("entry");
@@ -3410,6 +3501,14 @@ void main_loop(
 			{
 				VITA_FRAME_LOG("frame 0 present begin");
 				main_present_frame();
+
+#ifdef HALO_VITA
+				if (game_in_progress())
+				{
+					extern void halo_vita_audio_frame_presented(void);
+					halo_vita_audio_frame_presented();
+				}
+#endif
 				VITA_FRAME_LOG("frame 0 present ok");
 			}
 		}
@@ -3422,6 +3521,7 @@ void main_loop(
 		VITA_FRAME_LOG("frame 0 complete");
 #ifdef HALO_VITA
 		vita_first_frame = FALSE;
+		vita_main_frame_index++;
 #endif
 
 		if (main_globals.restart_time)

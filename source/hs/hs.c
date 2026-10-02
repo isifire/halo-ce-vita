@@ -13234,9 +13234,42 @@ void hs_initialize_for_new_map(
 void hs_dispose_from_old_map(
 	void)
 {
+#ifdef HALO_VITA
+	FILE *log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		fprintf(log, "hs_map_dispose: begin syntax=%p count=%d\n",
+			hs_syntax_data,
+			hs_syntax_data ? hs_syntax_data->count : -1);
+		fclose(log);
+	}
+#endif
+	/* Stop old-map script threads before collecting their syntax nodes.  A
+	 * thread stack stores datum indices into hs_syntax_data; collecting first
+	 * can invalidate a node while the old runtime still owns references to it. */
+	hs_runtime_dispose_from_old_map();
+#ifdef HALO_VITA
+	log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		fprintf(log, "hs_map_dispose: runtime stopped syntax=%p count=%d\n",
+			hs_syntax_data,
+			hs_syntax_data ? hs_syntax_data->count : -1);
+		fclose(log);
+	}
+#endif
 	if (hs_syntax_data)
 	{
 		hs_node_gc();
+#ifdef HALO_VITA
+		log = fopen("ux0:data/halo/boot.log", "a");
+		if (log)
+		{
+			fprintf(log, "hs_map_dispose: syntax gc complete count=%d\n",
+				hs_syntax_data->count);
+			fclose(log);
+		}
+#endif
 		if (hs_syntax_data_allocated)
 		{
 			data_make_invalid(hs_syntax_data);
@@ -13245,7 +13278,6 @@ void hs_dispose_from_old_map(
 		}
 		hs_syntax_data = NULL;
 	}
-	hs_runtime_dispose_from_old_map();
 	object_lists_dispose_from_old_map();
 	return;
 }

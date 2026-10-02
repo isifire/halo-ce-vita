@@ -10,8 +10,13 @@ device itself (d3d8_gl.c).
 #ifndef __HALO_LINUX_XGPU_H
 #define __HALO_LINUX_XGPU_H
 
+#ifdef HALO_VITA
+#include <xtl.h>
+#include <vitaGL.h>
+#else
 #include "platform.h"
 #include "gl.h"
+#endif
 
 #ifdef HALO_ANDROID
 /* OpenGL ES features that are optional (d3d8_gl.c gl_initialize) */

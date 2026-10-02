@@ -2542,6 +2542,19 @@ void _rasterizer_present(
 			success = FALSE;
 		}
 	}
+#ifdef HALO_VITA
+	{
+		static int s_rx_pres_log = 0;
+		if (s_rx_pres_log < 1) {
+			s_rx_pres_log++;
+			FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+			if (f_diag) {
+				fprintf(f_diag, "rasterizer_present #%d: calling IDirect3DDevice8_Present\n", s_rx_pres_log);
+				fclose(f_diag);
+			}
+		}
+	}
+#endif
 	if (IDirect3DDevice8_Present(
 		global_d3d_device,
 		NULL,
@@ -2558,6 +2571,19 @@ void _rasterizer_present(
 			0,
 			"IDirect3DDevice8_Present(global_d3d_device, NULL, NULL, window_globals.hWndPresentTarget, NULL)");
 	}
+#ifdef HALO_VITA
+	{
+		static int s_rx_pres_res = 0;
+		if (s_rx_pres_res < 1) {
+			s_rx_pres_res++;
+			FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+			if (f_diag) {
+				fprintf(f_diag, "rasterizer_present #%d: IDirect3DDevice8_Present returned success=%d\n", s_rx_pres_res, (int)success);
+				fclose(f_diag);
+			}
+		}
+	}
+#endif
 	rasterizer_globals.fps_accumulation_frame_index++;
 #ifdef HALO_LINUX
 	rasterizer_screen_width_update();

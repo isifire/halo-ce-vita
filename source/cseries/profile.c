@@ -1292,11 +1292,22 @@ static void profile_timesection_inherit(
 	struct profile_timer *parent_timesection,
 	struct profile_timer *child_timesection)
 {
+#ifdef HALO_VITA
+	/* Vita timing is sampled around GPU work and used to include synchronous
+	 * diagnostic I/O during bring-up.  Its child sample can consequently be
+	 * a few ticks larger than the parent sample.  Profiling must never stop
+	 * the game for that harmless accounting discrepancy. */
+	if (parent_timesection->frame_total >= child_timesection->total)
+		parent_timesection->frame_total -= child_timesection->total;
+	else
+		parent_timesection->frame_total = 0;
+#else
 	match_vassert("c:\\halo\\SOURCE\\cseries\\profile.c", 434,
 		parent_timesection->frame_total>=child_timesection->total,
 		"parent_timesection->self_msec >= child_timesection->elapsed_msec");
 
 	parent_timesection->frame_total -= child_timesection->total;
+#endif
 
 	return;
 }

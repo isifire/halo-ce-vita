@@ -777,7 +777,12 @@ void render_frame(
 	VITA_RENDER_LOG("frame: rasterizer_frame_end ok");
 
 #ifdef HALO_VITA
-	vita_trace_first_render = FALSE;
+	static int vita_render_frame_count = 0;
+	vita_render_frame_count++;
+	if (vita_render_frame_count >= 1)
+	{
+		vita_trace_first_render = FALSE;
+	}
 #endif
 
 	return;

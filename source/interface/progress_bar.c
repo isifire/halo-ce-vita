@@ -1637,6 +1637,10 @@ void SetRenderStateSmart(
 	D3DRENDERSTATETYPE state,
 	unsigned long value)
 {
+#ifdef HALO_VITA
+	D3DDevice_SetRenderStateNotInline(state, value);
+	return;
+#endif
 	if (state < D3DRS_SIMPLE_MAX)
 	{
 		D3DDevice_SetRenderState_Simple(D3DSIMPLERENDERSTATEENCODE[state], value);

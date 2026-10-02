@@ -289,6 +289,20 @@ static char default_render_model_region_permutation_indices[MAXIMUM_REGIONS_PER_
 
 struct profile_section render_model_section = { "render_model", NONE, TRUE };
 
+#ifdef HALO_VITA
+static void vita_model_trace(unsigned long line)
+{
+	static unsigned long count;
+	FILE *log;
+	if (count++ >= 8) return;
+	log = fopen("ux0:data/halo/boot.log", "a");
+	if (log) { fprintf(log, "render_model: checkpoint=%lu\n", line); fclose(log); }
+}
+#define VITA_MODEL_TRACE() vita_model_trace(__LINE__)
+#else
+#define VITA_MODEL_TRACE() ((void)0)
+#endif
+
 /* ---------- private code */
 
 static void render_model_parts(
@@ -773,7 +787,9 @@ void render_model(
 {
 	struct model *model = model_definition_get(model_index);
 
+	VITA_MODEL_TRACE();
 	profile_enter(render_model_section);
+	VITA_MODEL_TRACE();
 
 	match_assert("c:\\halo\\SOURCE\\models\\models.c", 82, lighting);
 
@@ -835,6 +851,7 @@ void render_model(
 			}
 		}
 
+		VITA_MODEL_TRACE();
 		geometry_detail_level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;
 		while (geometry_detail_level_index>0 &&
 			level_of_detail_pixels<model->detail_cutoff_pixels[geometry_detail_level_index])
@@ -1012,6 +1029,7 @@ void render_model(
 			}
 		}
 
+		VITA_MODEL_TRACE();
 		model_parameters.unique_identifier = unique_identifier;
 		model_parameters.lighting = *lighting;
 		model_parameters.centroid = *centroid;
@@ -1035,6 +1053,7 @@ void render_model(
 		SET_FLAG(model_parameters.geometry_flags, _rasterizer_geometry_atmospheric_fog_but_no_planar_fog_bit, TEST_FLAG(flags, _render_model_no_planar_fog_bit));
 		SET_FLAG(model_parameters.geometry_flags, _rasterizer_geometry_first_person_bit, TEST_FLAG(flags, _render_model_first_person_bit));
 
+		VITA_MODEL_TRACE();
 		if (TEST_FLAG(flags, _render_model_shadow_bit))
 		{
 			rasterizer_environment_shadow_model_begin(&model_parameters);
@@ -1043,6 +1062,7 @@ void render_model(
 		{
 			rasterizer_model_begin(&model_parameters, FALSE);
 		}
+		VITA_MODEL_TRACE();
 		render_model_parts(
 			model,
 			region_permutation_indices,
@@ -1051,6 +1071,7 @@ void render_model(
 			geometry_detail_level_index,
 			forced_shader_permutation_index,
 			flags);
+		VITA_MODEL_TRACE();
 		if (TEST_FLAG(flags, _render_model_shadow_bit))
 		{
 			rasterizer_environment_shadow_model_end();

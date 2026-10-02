@@ -53,7 +53,7 @@ def main():
         '-Wno-error=incompatible-pointer-types', '-Wno-error=incompatible-function-pointer-types',
         '-Wno-error=implicit-int', '-Wno-error=return-type', '-ferror-limit=8',
         '-include', 'port/vita/include/halo_vita_prefix.h', '-include', str(semantics),
-        '-Iport/vita/include', '-Iport/linux/include', '-Iport/linux/game', '-Isource', '-Isource/cseries',
+        '-Iport/vita/include', '-Iport/linux/include', '-Iport/linux/src', '-Iport/linux/game', '-Isource', '-Isource/cseries',
         '-isystem', 'port/include/xdk', '-isystem', str(args.sdk.resolve() / 'arm-vita-eabi/include'),
         '-Igpu-hard/arm-vita-eabi/include']
     config = json.loads((ROOT / 'config/config.json').read_text())
@@ -68,6 +68,12 @@ def main():
                    if o.get('status') != 'Missing' and o['name'].endswith('.c')]
         sources += ['port/vita/src/xapi_memory.c', 'port/vita/src/xapi_platform.c']
         sources += ['port/linux/src/halo_linker_common.c']
+        # Supply external definitions for MSVC header inlines. Undefined weak
+        # calls otherwise link successfully but return stale ARM registers.
+        sources += ['port/linux/game/msvc_comdat.c']
+        # Vita executes the Xbox NV2A texture combiners for menu/immediate
+        # primitives through VitaGL's ES shader path.
+        sources += ['port/linux/src/nv2a_psh.c', 'port/linux/src/nv2a_vsh.c', 'port/linux/src/xgpu_text.c']
         sources += ['port/vita/src/xinput_vita.c']
         sources += ['port/vita/src/arena.c', 'port/vita/src/memory_vita.c']
         sources += ['port/vita/src/bink_null.c', 'port/vita/src/xbdm.c']

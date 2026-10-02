@@ -47,6 +47,17 @@ __inline pixel32 real_argb_color_to_pixel32(
 	real scale = 255.0f;
 	pixel32 result;
 
+#ifdef HALO_VITA
+	/* Clamp out-of-range color components to [0,1] instead of crashing.
+	 * The Xbox original silently handled HDR/invalid values; on Vita the
+	 * assertion was firing with values like blue=1391.0 from map data. */
+	real_argb_color clamped;
+	clamped.alpha = color->alpha < 0.0f ? 0.0f : (color->alpha > 1.0f ? 1.0f : color->alpha);
+	clamped.red   = color->red   < 0.0f ? 0.0f : (color->red   > 1.0f ? 1.0f : color->red);
+	clamped.green = color->green < 0.0f ? 0.0f : (color->green > 1.0f ? 1.0f : color->green);
+	clamped.blue  = color->blue  < 0.0f ? 0.0f : (color->blue  > 1.0f ? 1.0f : color->blue);
+	color = &clamped;
+#else
 	match_vassert(
 		"..\\bitmaps\\bitmaps_inlines.h",
 		89,
@@ -59,6 +70,7 @@ __inline pixel32 real_argb_color_to_pixel32(
 			color->red,
 			color->green,
 			color->blue));
+#endif
 
 	{
 		long alpha;
@@ -159,7 +171,15 @@ __inline pixel32 real_rgb_color_to_pixel32(
 	pixel32 result;
 	real scale = (real)UNSIGNED_CHAR_MAX;
 
+#ifdef HALO_VITA
+	real_rgb_color clamped;
+	clamped.red   = color->red   < 0.0f ? 0.0f : (color->red   > 1.0f ? 1.0f : color->red);
+	clamped.green = color->green < 0.0f ? 0.0f : (color->green > 1.0f ? 1.0f : color->green);
+	clamped.blue  = color->blue  < 0.0f ? 0.0f : (color->blue  > 1.0f ? 1.0f : color->blue);
+	color = &clamped;
+#else
 	match_assert_valid_real_rgb_color("..\\bitmaps\\bitmaps_inlines.h", 0xC9, color);
+#endif
 
 #ifdef HALO_LINUX
 	result = (pixel32)(
@@ -205,10 +225,15 @@ __inline pixel32 real_alpha_to_pixel32(
 	real scale = 255.0f;
 	pixel32 result;
 
+#ifdef HALO_VITA
+	if (alpha < 0.0f) alpha = 0.0f;
+	else if (alpha > 1.0f) alpha = 1.0f;
+#else
 	match_assert(
 		"..\\bitmaps\\bitmaps_inlines.h",
 		291,
 		alpha>=0.0f && alpha<=1.0f);
+#endif
 
 #ifdef HALO_LINUX
 	result = (pixel32)((long)__builtin_rint((double)alpha * scale) << 24);

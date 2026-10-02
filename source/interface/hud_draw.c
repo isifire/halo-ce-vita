@@ -412,7 +412,9 @@ static void hud_draw_multitexture_overlay(
 
 /* Inspect the guarded caller's frame, not the return site of this helper.
  * A normal prologue would replace EBP and defeat the paired stack check. */
-#ifdef HALO_LINUX
+#if defined(HALO_VITA)
+/* Implemented at the call site in hud_draw.h, without a frame-chain walk. */
+#elif defined(HALO_LINUX)
 __attribute__((noinline)) long get_return_eip(
 	void)
 {

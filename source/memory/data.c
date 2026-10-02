@@ -165,6 +165,28 @@ void *datum_get(
 		}
 	}
 
+#ifdef HALO_VITA
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log)
+		{
+			short observed_identifier = 0;
+			if (absolute_index>=0 && absolute_index<data->count)
+			{
+				header = (struct datum_header *)((byte *)data->data+data->size*absolute_index);
+				observed_identifier = header->identifier;
+			}
+			fprintf(log,
+				"datum_get_miss: array=%p name='%.31s' data=%p count=%d max=%d size=%d index=%08lx requested_id=%04x slot_id=%04x next_id=%04x caller=%p\n",
+				data, data->name, data->data, data->count, data->maximum_count, data->size,
+				(unsigned long)index, (unsigned short)identifier,
+				(unsigned short)observed_identifier, (unsigned short)data->next_identifier,
+				__builtin_return_address(0));
+			fclose(log);
+		}
+	}
+#endif
+
 	match_vassert(
 		"c:\\halo\\SOURCE\\memory\\data.c",
 		412,

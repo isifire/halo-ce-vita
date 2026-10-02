@@ -35,7 +35,7 @@ alone.
 
 #undef __inline
 #undef __forceinline
-#ifdef _WIN32
+#if defined(_WIN32) || defined(HALO_VITA)
 #define __inline __attribute__((weak))
 #define __forceinline __attribute__((weak))
 #else

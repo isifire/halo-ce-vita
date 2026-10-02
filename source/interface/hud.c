@@ -1146,13 +1146,17 @@ void temporary_hud_draw(
 	return;
 }
 
+#include "vita_hud_trace.h"
+
 void hud_draw_screen(
 	void)
 {
 	long player_index = local_player_get_player_index(render.local_player_index);
 	director_perspective perspective = director_get_perspective(render.local_player_index);
 
+	vita_hud_trace("player and perspective resolved");
 	rasterizer_hud_begin();
+	vita_hud_trace("rasterizer_hud_begin complete");
 	if (player_index != NONE)
 	{
 		struct player_datum *player = player_get(player_index);
@@ -1160,16 +1164,20 @@ void hud_draw_screen(
 		if ((!game_engine_running() || game_engine_display_team_indicators()) &&
 			!cinematic_in_progress())
 		{
+			vita_hud_trace("hud_draw_players begin");
 			hud_draw_players();
+			vita_hud_trace("hud_draw_players complete");
 		}
 
 		if (!game_time_get_paused() &&
 			render.local_player_index == local_player_get_next(NONE))
 		{
+			vita_hud_trace("motion_sensor_tick begin");
 			motion_sensor_tick();
+			vita_hud_trace("motion_sensor_tick complete");
 		}
 
-		if (hud_scripted_globals->show_hud)
+		if (hud_scripted_globals && hud_scripted_globals->show_hud)
 		{
 			if (perspective != _director_perspective_neutral &&
 				perspective != _director_perspective_scripted &&
@@ -1184,8 +1192,11 @@ void hud_draw_screen(
 			}
 			else
 			{
+				vita_hud_trace("scripted view action response begin");
 				hud_show_action_response(player_index);
+				vita_hud_trace("scripted view action response complete");
 				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+				vita_hud_trace("scripted view unit sounds complete");
 			}
 		}
 		else
@@ -1193,10 +1204,13 @@ void hud_draw_screen(
 			hud_play_unit_sounds(player, FALSE);
 		}
 
+		vita_hud_trace("hud_messaging_update begin");
 		hud_messaging_update(render.local_player_index);
+		vita_hud_trace("hud_messaging_update complete");
 	}
 
 	rasterizer_hud_end();
+	vita_hud_trace("rasterizer_hud_end complete");
 	if (temporary_hud)
 	{
 		temporary_hud_draw();

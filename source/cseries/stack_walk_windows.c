@@ -314,6 +314,18 @@ void stack_walk_with_context(
 	short levels_to_ignore,
 	CONTEXT *context_pointer)
 {
+#ifdef HALO_VITA
+	/* This walker decodes x86 EBP chains and CALL displacements, not ARM
+	 * frames. The campaign-load dump faults here reading [0xffffffff - 4]
+	 * while reporting the original assertion. Never dereference that chain
+	 * (or the XDK CONTEXT) on Vita. Keep the original assertion report alive. */
+	(void)levels_to_ignore;
+	(void)context_pointer;
+	if (error_stream)
+		fprintf(error_stream, "Vita: Xbox/x86 stack walk unavailable\n");
+	else
+		error(_error_silent, "Vita: Xbox/x86 stack walk unavailable");
+#else
 	unsigned long routine_addresses[64] = { 0 };
 	unsigned long levels_dumped;
 	long frame_number;
@@ -426,6 +438,7 @@ void stack_walk_with_context(
 		}
 	}
 
+#endif
 	return;
 }
 

@@ -211,6 +211,10 @@ enum
 /* ---------- macros */
 
 #define CACHE_FILE_BUILD_STRING "01.01.14.2342"
+#ifdef HALO_VITA
+#define CACHE_FILE_HEADER_SIGNATURE 'head'
+#define CACHE_FILE_FOOTER_SIGNATURE 'foot'
+#endif
 
 /* ---------- structures */
 
@@ -337,6 +341,10 @@ typedef char verify_cache_file_requests_offset[
 
 /* ---------- prototypes */
 
+static void cached_map_clean_name(
+	const char *input,
+	char *output,
+	size_t max_len);
 static void cache_file_get_map_path(
 	const char *map_name,
 	char *path);
@@ -556,13 +564,49 @@ boolean cache_files_precache_in_progress(
 	return cache_file_globals.copy_in_progress;
 }
 
+static void cached_map_clean_name(
+	const char *input,
+	char *output,
+	size_t max_len)
+{
+	const char *clean;
+	const char *slash_bs;
+	const char *slash_fs;
+	size_t len;
+
+	if (!input || !output || max_len == 0)
+	{
+		if (output && max_len > 0) output[0] = '\0';
+		return;
+	}
+
+	slash_bs = strrchr(input, '\\');
+	slash_fs = strrchr(input, '/');
+	clean = (slash_bs > slash_fs) ? slash_bs : slash_fs;
+	if (clean)
+		clean++;
+	else
+		clean = input;
+
+	csstrncpy(output, clean, max_len - 1);
+	output[max_len - 1] = '\0';
+
+	len = strlen(output);
+	if (len > 4 && _stricmp(output + len - 4, ".map") == 0)
+	{
+		output[len - 4] = '\0';
+	}
+}
+
 boolean cache_files_precache_is_copying_map(
 	const char *map_name)
 {
+	char clean[64];
+	cached_map_clean_name(map_name, clean, sizeof(clean));
 	if (cache_file_globals.copying_to_map_file_index != NONE &&
 		strcmp(
 			cache_file_globals.copying_to_map_file_name,
-			tag_name_strip_path(map_name)) == 0)
+			clean) == 0)
 	{
 		return TRUE;
 	}
@@ -741,6 +785,26 @@ boolean cache_file_open(
 {
 	short map_file_index = cached_map_files_find_map(scenario_name);
 
+#ifdef HALO_VITA
+	if (map_file_index == NONE && scenario_name)
+	{
+		char clean[64];
+		cached_map_clean_name(scenario_name, clean, sizeof(clean));
+		map_file_index = cached_map_files_find_map(clean);
+	}
+	if (cache_file_globals.open_map_file_index != NONE)
+	{
+		cache_file_close();
+	}
+	{
+		FILE *f_diag = fopen("ux0:data/halo/boot.log", "a");
+		if (f_diag) {
+			fprintf(f_diag, "cache_file_open: scenario='%s' resolved_index=%d\n",
+				scenario_name ? scenario_name : "(null)", (int)map_file_index);
+			fclose(f_diag);
+		}
+	}
+#endif
 	match_assert(
 		"c:\\halo\\SOURCE\\cache\\cache_files_windows.c",
 		220,
@@ -1020,7 +1084,7 @@ static void cache_files_open_cache_files(
 			char *cache_map_name = cached_map_file_get(map_file_index)->header.name;
 
 			cached_map_file_read_header(map_file_index);
-#ifndef HALO_LINUX
+#if !defined(HALO_LINUX) && !defined(HALO_VITA)
 			/* (the native builds keep a copied map whatever build made it;
 			the checksum below still has to match the original's) */
 			if (strcmp(map_file->header.build, CACHE_FILE_BUILD_STRING) != 0)
@@ -1028,12 +1092,23 @@ static void cache_files_open_cache_files(
 				valid = FALSE;
 			}
 #endif
+#ifdef HALO_VITA
+			if (valid &&
+				map_file->header.header_signature == CACHE_FILE_HEADER_SIGNATURE &&
+				map_file->header.footer_signature == CACHE_FILE_FOOTER_SIGNATURE &&
+				map_file->header.name[0] &&
+				memchr(map_file->header.name, 0, sizeof(map_file->header.name)))
+			{
+				continue;
+			}
+#else
 			if (cache_file_read_header_from_dvd(cache_map_name, &dvd_header) &&
 				map_file->header.checksum == dvd_header.checksum &&
 				valid)
 			{
 				continue;
 			}
+#endif
 		}
 
 		memset(
@@ -1041,6 +1116,18 @@ static void cache_files_open_cache_files(
 			0,
 			sizeof(struct cache_file_header));
 	}
+
+#ifdef HALO_VITA
+	/* On PS Vita, pre-mount d:\\maps\\a10.map into slot 0 if slot 0 is not yet valid */
+	{
+		struct cached_map_file *slot0 = cached_map_file_get(0);
+		if (slot0->file == INVALID_HANDLE_VALUE ||
+			slot0->header.header_signature != CACHE_FILE_HEADER_SIGNATURE)
+		{
+			cached_map_files_find_map("a10");
+		}
+	}
+#endif
 
 	return;
 }
@@ -1156,7 +1243,9 @@ static void cache_file_get_map_path(
 	const char *map_name,
 	char *path)
 {
-	sprintf(path, "%s%s.map", cache_files_map_directory(), map_name);
+	char clean[64];
+	cached_map_clean_name(map_name, clean, sizeof(clean));
+	sprintf(path, "%s%s.map", cache_files_map_directory(), clean);
 
 	return;
 }
@@ -1593,18 +1682,177 @@ static short cached_map_files_find_map(
 	const char *map_name)
 {
 	short map_file_index;
+	char clean_name[64];
 
+	if (!map_name || !map_name[0])
+		return NONE;
+
+	cached_map_clean_name(map_name, clean_name, sizeof(clean_name));
+	if (!clean_name[0])
+		return NONE;
+
+	/* 1. Check currently active cache slots */
 	for (map_file_index = 0;
 		map_file_index < NUMBER_OF_CACHED_MAP_FILES;
 		map_file_index++)
 	{
-		if (_stricmp(
-			map_name,
-			cached_map_file_get(map_file_index)->header.name) == 0)
+		struct cached_map_file *map_file = cached_map_file_get(map_file_index);
+		struct cache_file_header *header = &map_file->header;
+
+		if (map_file->file == INVALID_HANDLE_VALUE)
+			continue;
+
+		if (header->header_signature != CACHE_FILE_HEADER_SIGNATURE ||
+			header->footer_signature != CACHE_FILE_FOOTER_SIGNATURE ||
+			!header->name[0] || !memchr(header->name, 0, sizeof(header->name)))
+			continue;
+
 		{
+			char header_clean[64];
+			cached_map_clean_name(header->name, header_clean, sizeof(header_clean));
+			if (_stricmp(clean_name, header->name) == 0 ||
+				_stricmp(clean_name, header_clean) == 0)
+		{
+#ifdef HALO_VITA
+			FILE *log = fopen("ux0:data/halo/boot.log", "a");
+			if (log) {
+				fprintf(log, "cached_map_files_find_map: matched '%.32s' in slot %d (name='%.32s', bytes=%ld)\n",
+					clean_name, (int)map_file_index, header->name, header->file_length);
+				fclose(log);
+			}
+#endif
 			return map_file_index;
 		}
 	}
+	}
+
+#ifdef HALO_VITA
+	/* 2. Vita Direct Map Mounting:
+	 * If not already active in a cache slot, directly mount the map file from
+	 * ux0:data/halo/maps/<clean_name>.map into a suitable cache slot.
+	 * This eliminates the 75+ second slow copying/decompression cycle on the Vita
+	 * and enables playing ANY campaign mission or multiplayer map directly! */
+	{
+		short target_slot = NONE;
+		char map_path[256];
+		HANDLE file = INVALID_HANDLE_VALUE;
+		struct cache_file_header file_header;
+		unsigned long bytes_read;
+
+		if (_stricmp(clean_name, "ui") == 0)
+		{
+			target_slot = 2; /* Main menu slot */
+		}
+		else if (cache_file_globals.open_map_file_index != 0)
+		{
+			target_slot = 0; /* Solo / campaign primary slot */
+		}
+		else if (cache_file_globals.open_map_file_index != 1)
+		{
+			target_slot = 1; /* Solo / campaign secondary slot */
+		}
+		else
+		{
+			target_slot = 3; /* Multiplayer slot */
+		}
+
+		/* Check d:\\maps\\<clean_name>.map first (ux0:data/halo/maps/<clean_name>.map) */
+		snprintf(map_path, sizeof(map_path), "%s%s.map", cache_files_map_directory(), clean_name);
+		file = CreateFileA(
+			map_path,
+			GENERIC_READ | GENERIC_WRITE,
+			0,
+			NULL,
+			OPEN_EXISTING,
+			FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+			NULL);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			file = CreateFileA(
+				map_path,
+				GENERIC_READ,
+				0,
+				NULL,
+				OPEN_EXISTING,
+				0,
+				NULL);
+		}
+
+		/* Fallback to z:\\cache000.map if opening from d:\\maps\\ failed and target is slot 0 */
+		if (file == INVALID_HANDLE_VALUE && target_slot == 0)
+		{
+			cached_map_file_get_path(0, map_path);
+			file = CreateFileA(
+				map_path,
+				GENERIC_READ | GENERIC_WRITE,
+				0,
+				NULL,
+				OPEN_EXISTING,
+				FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+				NULL);
+			if (file == INVALID_HANDLE_VALUE)
+		{
+				file = CreateFileA(
+					map_path,
+					GENERIC_READ,
+					0,
+					NULL,
+					OPEN_EXISTING,
+					0,
+					NULL);
+			}
+		}
+
+		if (file != INVALID_HANDLE_VALUE)
+		{
+			memset(&file_header, 0, sizeof(file_header));
+			if (ReadFile(file, &file_header, sizeof(file_header), &bytes_read, NULL) &&
+				bytes_read == sizeof(file_header) &&
+				file_header.header_signature == CACHE_FILE_HEADER_SIGNATURE &&
+				file_header.footer_signature == CACHE_FILE_FOOTER_SIGNATURE &&
+				file_header.file_length > 0 &&
+				memchr(file_header.name, 0, sizeof(file_header.name)))
+			{
+				struct cached_map_file *target_file = cached_map_file_get(target_slot);
+				if (target_file->file != INVALID_HANDLE_VALUE && target_file->file != file)
+				{
+					CloseHandle(target_file->file);
+				}
+				target_file->file = file;
+				memcpy(&target_file->header, &file_header, sizeof(struct cache_file_header));
+				GetFileTime(file, &target_file->last_modification_date, NULL, NULL);
+
+				FILE *log = fopen("ux0:data/halo/boot.log", "a");
+				if (log) {
+					fprintf(log, "cached_map_files_find_map: mounted '%.255s' into slot %d (name='%.32s', bytes=%ld)\n",
+						map_path, (int)target_slot, target_file->header.name, target_file->header.file_length);
+					fclose(log);
+				}
+
+				return target_slot;
+			}
+			else
+			{
+				FILE *log = fopen("ux0:data/halo/boot.log", "a");
+				if (log) {
+					fprintf(log, "cached_map_files_find_map: invalid header in '%.255s' (bytes_read=%lu, head=%08lx, foot=%08lx)\n",
+						map_path, bytes_read, file_header.header_signature, file_header.footer_signature);
+					fclose(log);
+				}
+				CloseHandle(file);
+			}
+		}
+		else
+		{
+			FILE *log = fopen("ux0:data/halo/boot.log", "a");
+			if (log) {
+				fprintf(log, "cached_map_files_find_map: could not open '%.255s' (error=%lu)\n",
+					map_path, GetLastError());
+				fclose(log);
+			}
+		}
+	}
+#endif
 
 	return NONE;
 }

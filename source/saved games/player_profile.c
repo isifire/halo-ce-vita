@@ -913,11 +913,21 @@ static void player_profile_write(
 		profile,
 		sizeof(struct player_profile));
 
+#ifdef HALO_VITA
+	/* The saved-game enumerator can still own its recursive mutex while this
+	 * callback runs.  An Xbox worker would wait for the owner to finish, but
+	 * on Vita the UI waits for the write before releasing it, deadlocking the
+	 * profile editor.  Keep the write on the owning thread so the recursive
+	 * mutex and the following metadata update complete atomically. */
+	player_profile_write_thread_proc(&player_profile_globals.write_request);
+	player_profile_globals.thread = NULL;
+#else
 	create_thread(
 		0,
 		player_profile_write_thread_proc,
 		&player_profile_globals.write_request,
 		&player_profile_globals.thread);
+#endif
 
 	return;
 }

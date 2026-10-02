@@ -653,16 +653,25 @@ void interface_draw_bitmap_modulated(
 	return;
 }
 
+#include "vita_hud_trace.h"
+
 void interface_draw_screen(
 	void)
 {
 	real flashlight_power;
 	long weapon_hud_index;
 
-	if (render.local_player_index == NONE)
-		return;
+	vita_hud_trace("interface_draw_screen enter");
 
+	if (render.local_player_index == NONE)
+	{
+		vita_hud_trace("interface_draw_screen local_player_index == NONE");
+		return;
+	}
+
+	vita_hud_trace("weapon HUD lookup begin");
 	weapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);
+	vita_hud_trace("weapon HUD lookup complete");
 	if (weapon_hud_index != NONE)
 	{
 		struct weapon_hud_interface_definition *hud_definition =
@@ -803,12 +812,18 @@ void interface_draw_screen(
 	}
 	else
 	{
+		vita_hud_trace("screen effect without weapon begin");
 		rasterizer_screen_effect(NULL);
+		vita_hud_trace("screen effect without weapon complete");
 	}
 
+	vita_hud_trace("hud_draw_screen begin");
 	hud_draw_screen();
+	vita_hud_trace("hud_draw_screen complete");
 	game_engine_post_rasterize();
+	vita_hud_trace("game_engine_post_rasterize complete");
 
+	vita_hud_trace("interface_draw_screen exit");
 	return;
 }
 

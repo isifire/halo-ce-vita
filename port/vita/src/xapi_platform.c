@@ -465,16 +465,187 @@ void * WINAPI XCalculateSignatureBegin(DWORD flags) { (void)flags; return (void*
 DWORD WINAPI XCalculateSignatureUpdate(void *handle, const BYTE *data, DWORD size) { (void)handle; (void)data; (void)size; return 0; }
 DWORD WINAPI XCalculateSignatureEnd(void *handle, struct _XCALCSIG_SIGNATURE *signature) { (void)handle; if(signature) memset(signature, 0, sizeof(*signature)); return 0; }
 
-DWORD WINAPI XCreateSaveGame(LPCSTR root, LPCWSTR name, DWORD disposition, DWORD flags, char *path, UINT path_size) {
-    (void)root; (void)name; (void)disposition; (void)flags;
-    if(path && path_size) snprintf(path, path_size, "ux0:data/halo/save");
-    return 0;
+static int save_path(LPCSTR root, LPCWSTR name, char *guest, unsigned int capacity, unsigned short stored[128]) {
+    unsigned int hash = 2166136261u, i;
+    if (!root || !name || !name[0]) return 0;
+    memset(stored, 0, 256);
+    for (i = 0; i < 127 && name[i]; ++i) {
+        stored[i] = name[i];
+        hash = (hash ^ (name[i] & 255)) * 16777619u;
+        hash = (hash ^ (name[i] >> 8)) * 16777619u;
+    }
+    if (name[i]) return 0;
+    return snprintf(guest, capacity, "%s\\sg%08x\\", root, hash) < (int)capacity;
 }
+static unsigned int save_name_hash(LPCWSTR name) {
+    unsigned int hash = 2166136261u, i;
+    if (!name) return 0;
+    for (i = 0; i < 127 && name[i]; ++i) {
+        hash = (hash ^ (name[i] & 255)) * 16777619u;
+        hash = (hash ^ (name[i] >> 8)) * 16777619u;
+    }
+    return name[i] ? 0 : hash;
+}
+static DWORD vita_create_save_game(LPCSTR root, LPCWSTR name, DWORD disposition, DWORD flags, char *path, UINT path_size) {
+    char guest[260], native[VITA_PATH_MAX], metadata[VITA_PATH_MAX], native_root[VITA_PATH_MAX];
+    char save_file[VITA_PATH_MAX], list_file[VITA_PATH_MAX], retired[VITA_PATH_MAX];
+    unsigned short stored[128], existing[128];
+    unsigned int name_hash = 0;
+    SceIoStat stat; FILE *file; int exists;
+    (void)flags;
+    /* The reconstructed wide_to_ascii call can reject the static Xbox
+     * `u:\\` literal and pass NULL. This build supports only the hard drive,
+     * so restore its canonical XAPI root at the platform boundary. */
+    if (!root) root = "u:\\";
+    name_hash = save_name_hash(name);
+    if (!path || !save_path(root, name, guest, sizeof(guest), stored) || strlen(guest) >= path_size)
+        return ERROR_INVALID_PARAMETER;
+    if (disposition != CREATE_NEW && disposition != OPEN_EXISTING && disposition != OPEN_ALWAYS)
+        return ERROR_INVALID_PARAMETER;
+    translate_path(guest, native, sizeof(native));
+    snprintf(metadata, sizeof(metadata), "%s/name.bin", native);
+    exists = sceIoGetstat(native, &stat) >= 0;
+    if (!exists && disposition == OPEN_EXISTING) return ERROR_FILE_NOT_FOUND;
+    if (exists) {
+        file = fopen(metadata, "rb");
+        int valid = file && fread(existing, 1, sizeof(existing), file) == sizeof(existing) &&
+            !memcmp(stored, existing, sizeof(stored));
+        if (file) fclose(file);
+        if (disposition == CREATE_NEW) {
+            /* Interrupted attempts can leave only name.bin behind. They are
+             * invisible to Halo's map file but permanently block that name.
+             * Retire such a container and retry; never replace real content. */
+            snprintf(save_file, sizeof(save_file), "%s/blam.sav", native);
+            snprintf(list_file, sizeof(list_file), "%s/blam.lst", native);
+            {
+                int has_save_file = sceIoGetstat(save_file, &stat) >= 0;
+                int has_list_file = sceIoGetstat(list_file, &stat) >= 0;
+                if (!has_save_file && !has_list_file) {
+                snprintf(retired, sizeof(retired), "%s.orphan-%llu", native,
+                    (unsigned long long)sceKernelGetProcessTimeWide());
+                if (sceIoRename(native, retired) < 0) {
+                    FILE *log = fopen("ux0:data/halo/boot.log", "a");
+                    if (log) { fprintf(log, "save_probe: name_hash=%08x reason=empty_orphan_rename_failed dir=%s\n", name_hash, native); fclose(log); }
+                    return ERROR_GEN_FAILURE;
+                }
+                exists = 0;
+                } else {
+                    FILE *log = fopen("ux0:data/halo/boot.log", "a");
+                    if (log) {
+                        fprintf(log, "save_probe: name_hash=%08x reason=CREATE_NEW_existing_files metadata_matches=%d blam_sav=%d blam_lst=%d dir=%s\n",
+                            name_hash, valid, has_save_file, has_list_file, native);
+                        fclose(log);
+                    }
+                    return ERROR_ALREADY_EXISTS;
+                }
+            }
+        } else if (!valid) {
+            FILE *log = fopen("ux0:data/halo/boot.log", "a");
+            if (log) { fprintf(log, "save_probe: name_hash=%08x reason=metadata_name_mismatch disposition=%lu dir=%s\n", name_hash, disposition, native); fclose(log); }
+            return ERROR_ALREADY_EXISTS; /* Hash collision or foreign directory. */
+        }
+    }
+    if (!exists) {
+        translate_path(root, native_root, sizeof(native_root));
+        sceIoMkdir(native_root, 0777);
+        if (sceIoMkdir(native, 0777) < 0) return ERROR_GEN_FAILURE;
+        file = fopen(metadata, "wb");
+        if (!file) { sceIoRmdir(native); return ERROR_GEN_FAILURE; }
+        int valid = fwrite(stored, 1, sizeof(stored), file) == sizeof(stored);
+        if (fclose(file)) valid = 0;
+        if (!valid) { sceIoRemove(metadata); sceIoRmdir(native); return ERROR_GEN_FAILURE; }
+    }
+    memcpy(path, guest, strlen(guest) + 1);
+    return ERROR_SUCCESS;
+}
+DWORD WINAPI XCreateSaveGame(LPCSTR root, LPCWSTR name, DWORD disposition, DWORD flags, char *path, UINT path_size) {
+    char debug_guest[260] = {0};
+    unsigned short debug_stored[128];
+    unsigned int name_hash = 0;
+    const char *effective_root = root ? root : "u:\\";
+    (void)save_path(effective_root, name, debug_guest, sizeof(debug_guest), debug_stored);
+    name_hash = save_name_hash(name);
+    DWORD result = vita_create_save_game(root, name, disposition, flags, path, path_size);
+    /* Keep the precise result: the engine otherwise reports every failure as
+     * a generic metadata error, hiding duplicate names and invalid input. */
+    if (disposition != OPEN_EXISTING || (result && result != ERROR_FILE_NOT_FOUND)) {
+        FILE *log = fopen("ux0:data/halo/boot.log", "a");
+        if (log) {
+            fprintf(log, "save_game: disposition=%lu result=%lu name_hash=%08x root=%s path=%s expected=%s\n",
+                disposition, result, name_hash, root ? root : "(null)", result ? "(none)" : path, debug_guest);
+            fclose(log);
+        }
+    }
+    return result;
+}
+DWORD WINAPI XDeleteSaveGame(LPCSTR root, LPCWSTR name) {
+    char guest[260], native[VITA_PATH_MAX], retired[VITA_PATH_MAX], metadata[VITA_PATH_MAX];
+    DWORD result = XCreateSaveGame(root, name, OPEN_EXISTING, 0, guest, sizeof(guest));
+    int rename_result;
+    FILE *log;
+    if (result) {
+        log = fopen("ux0:data/halo/boot.log", "a");
+        if (log) { fprintf(log, "save_delete: open failed result=%lu root=%s\n", result, root ? root : "(null)"); fclose(log); }
+        return result;
+    }
+    translate_path(guest, native, sizeof(native));
+    /* Retire the container atomically; keep its files recoverable. */
+    snprintf(retired, sizeof(retired), "%s.deleted-%llu", native, (unsigned long long)sceKernelGetProcessTimeWide());
+    rename_result = sceIoRename(native, retired);
+    if (rename_result >= 0) return ERROR_SUCCESS;
 
-DWORD WINAPI XDeleteSaveGame(LPCSTR root, LPCWSTR name) { (void)root; (void)name; return 0; }
-void * WINAPI XFindFirstSaveGame(LPCSTR root, struct _XGAME_FIND_DATA *find_data) { (void)root; (void)find_data; return (void*)-1; }
-BOOL WINAPI XFindNextSaveGame(void *search, struct _XGAME_FIND_DATA *find_data) { (void)search; (void)find_data; return FALSE; }
-BOOL WINAPI XFindClose(void *search) { (void)search; return TRUE; }
+    /* Vita's filesystem can reject renaming a non-empty directory while the
+     * game still has one of its save files open. Halo only needs the old
+     * display-name record gone here: remove name.bin so enumeration no longer
+     * exposes the old profile, but preserve the data directory for recovery. */
+    snprintf(metadata, sizeof(metadata), "%s/name.bin", native);
+    {
+        int remove_result = sceIoRemove(metadata);
+        log = fopen("ux0:data/halo/boot.log", "a");
+        if (log) {
+            fprintf(log, "save_delete: rename=%d source=%s destination=%s metadata_remove=%d\n",
+                rename_result, native, retired, remove_result);
+            fclose(log);
+        }
+        return remove_result >= 0 ? ERROR_SUCCESS : ERROR_GEN_FAILURE;
+    }
+}
+BOOL WINAPI XFindNextSaveGame(void *search, struct _XGAME_FIND_DATA *find_data) {
+    struct vita_handle *h = get_handle(search, VITA_DIRECTORY);
+    SceIoDirent entry;
+    if (!h || !find_data) return FALSE;
+    for (;;) {
+        char guest[260], native[VITA_PATH_MAX], metadata[VITA_PATH_MAX]; FILE *file;
+        memset(&entry, 0, sizeof(entry));
+        if (sceIoDread(h->uid, &entry) <= 0) { SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+        if (!SCE_S_ISDIR(entry.d_stat.st_mode) || strlen(entry.d_name) != 10 || strncmp(entry.d_name, "sg", 2)) continue;
+        if (snprintf(guest, sizeof(guest), "%s\\%s\\", h->path, entry.d_name) >= sizeof(guest)) continue;
+        translate_path(guest, native, sizeof(native));
+        snprintf(metadata, sizeof(metadata), "%s/name.bin", native);
+        file = fopen(metadata, "rb"); if (!file) continue;
+        memset(find_data, 0, sizeof(*find_data));
+        int valid = fread(find_data->szSaveGameName, 1, sizeof(find_data->szSaveGameName), file) == sizeof(find_data->szSaveGameName);
+        fclose(file); if (!valid) continue;
+        find_data->szSaveGameName[127] = 0;
+        strcpy(find_data->szSaveGameDirectory, guest);
+        strcpy(find_data->wfd.cFileName, entry.d_name);
+        find_data->wfd.dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+        to_filetime(&entry.d_stat.st_ctime, &find_data->wfd.ftCreationTime);
+        to_filetime(&entry.d_stat.st_mtime, &find_data->wfd.ftLastWriteTime);
+        return TRUE;
+    }
+}
+void * WINAPI XFindFirstSaveGame(LPCSTR root, struct _XGAME_FIND_DATA *find_data) {
+    char native[VITA_PATH_MAX]; struct vita_handle *h;
+    if (!root) root = "u:\\";
+    if (!find_data || strlen(root) >= VITA_PATH_MAX) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
+    h = new_handle(VITA_DIRECTORY); if (!h) return INVALID_HANDLE_VALUE;
+    strcpy(h->path, root); translate_path(root, native, sizeof(native));
+    h->uid = sceIoDopen(native);
+    if (h->uid < 0 || !XFindNextSaveGame(h, find_data)) { CloseHandle(h); SetLastError(ERROR_NO_MORE_FILES); return INVALID_HANDLE_VALUE; }
+    return h;
+}
+BOOL WINAPI XFindClose(void *search) { return CloseHandle(search); }
 BOOL WINAPI XSetNicknameW(LPCWSTR name, BOOL flush) { (void)name; (void)flush; return TRUE; }
 void * WINAPI XFindFirstNicknameW(int flags, unsigned short *search, unsigned int data) { (void)flags; (void)search; (void)data; return (void*)-1; }
 DWORD WINAPI XLaunchNewImageA(LPCSTR image_path, struct _LAUNCH_DATA *launch_data) { (void)image_path; (void)launch_data; return 0; }

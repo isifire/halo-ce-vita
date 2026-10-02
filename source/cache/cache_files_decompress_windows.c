@@ -1037,6 +1037,9 @@ short cache_copy_get_status(
 {
 	unsigned long flags = cache_copy_get_flags();
 	short status = 0;
+#ifdef HALO_VITA
+	boolean complete;
+#endif
 
 	match_assert(
 		"c:\\halo\\SOURCE\\cache\\cache_files_decompress_windows.c",
@@ -1046,12 +1049,22 @@ short cache_copy_get_status(
 	if (global_self->blocking)
 		Sleep(16);
 
+#ifdef HALO_VITA
+	/* Sample the result after synchronizing with completion, not before
+	 * sleeping: the worker can publish a failure during that sleep. */
+	complete = WaitForSingleObject(global_self->copy_complete_event, 0) == 0;
+	flags = cache_copy_get_flags();
+#endif
 	if (!flags && global_self->copy_thread)
 	{
 		if (global_self->header.size > 0)
 		{
+#ifdef HALO_VITA
+			status = (short)(complete + _cache_copy_in_progress);
+#else
 			status = (short)((WaitForSingleObject(global_self->copy_complete_event, 0) == 0) +
 				_cache_copy_in_progress);
+#endif
 			if (WaitForSingleObject(global_self->progress_update_event, 0) == 0)
 			{
 				real read_progress;
@@ -1801,6 +1814,10 @@ static unsigned long __stdcall simple_cache_copy_thread(
 				if (!self->write_bytes_left)
 				{
 					cache_copy_wait_for_async_io(self);
+#ifdef HALO_VITA
+					/* Commit a usable header only after all payload writes succeeded. */
+					if (!(self->flags & ALL_COPY_FAILURE_FLAGS) && !self->async_write_bytes_left)
+#endif
 					cache_copy_issue_write_raw(self, &self->header, sizeof(self->header), 0);
 				}
 			}
@@ -1810,6 +1827,16 @@ static unsigned long __stdcall simple_cache_copy_thread(
 
 		cache_copy_wait_for_async_io(self);
 		VITA_CACHE_LOG("asynchronous I/O drained");
+#ifdef HALO_VITA
+		/* A cancelled/short copy is not a finished map. Previously it could
+		 * signal success with the deliberately blank destination header. */
+		if (self->write_bytes_left || self->async_write_bytes_left)
+			cache_copy_set_flag(_copy_bad_file_bit);
+#endif
+		vita_cache_boot_log("cache_copy_result: source=%s flags=%08lx remaining=%ld async_remaining=%ld written=%ld expected=%ld stop=%d",
+			self->src_name, self->flags, self->write_bytes_left,
+			self->async_write_bytes_left, self->current_write_offset, self->header.size,
+			(int)cache_copy_stop_requested());
 
 		CloseHandle(self->source_file);
 		self->source_file = NULL;

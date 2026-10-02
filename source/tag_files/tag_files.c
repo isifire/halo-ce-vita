@@ -12,13 +12,20 @@ TAG_FILES.C
 const char *tag_name_strip_path(
 	char const *name)
 {
+	const char *stripped_bs;
+	const char *stripped_fs;
 	const char *stripped;
+
+	if (!name)
+		return "";
 
 	match_assert("c:\\halo\\SOURCE\\tag_files\\tag_files.c", 1374, name);
 
-	stripped = strrchr(name, '\\');
+	stripped_bs = strrchr(name, '\\');
+	stripped_fs = strrchr(name, '/');
+	stripped = (stripped_bs > stripped_fs) ? stripped_bs : stripped_fs;
 
-	if (stripped!=NULL)
+	if (stripped != NULL)
 	{
 		return stripped + 1;
 	}

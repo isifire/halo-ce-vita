@@ -1,0 +1,264 @@
+diff --git a/source/utils/glsl_utils.c b/source/utils/glsl_utils.c
+index c39ebb1a..dda5565b 100644
+--- a/source/utils/glsl_utils.c
++++ b/source/utils/glsl_utils.c
+@@ -27,6 +27,8 @@
+ #include "glsl_utils.h"
+ #include "preprocessor/preprocessor_c.h"
+ 
++extern void halo_vita_glsl_checkpoint(const char *message);
++
+ #define GLSL_BUFFER_MIN_CAPACITY (4096)
+ 
+ typedef struct {
+@@ -989,64 +991,140 @@ GLboolean glsl_handle_ubos(char *txt, glsl_buffer *out, GLsizei preamble_size) {
+  * add to it static keyword only if not uniform. This is required cause CG handles
+  * global variables by default as uniforms.
+  */
++static char *glsl_skip_space_and_comments(char *text) {
++	for (;;) {
++		while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')
++			text++;
++		if (text[0] == '/' && text[1] == '/') {
++			text += 2;
++			while (*text && *text != '\n')
++				text++;
++			continue;
++		}
++		if (text[0] == '/' && text[1] == '*') {
++			char *comment_end = strstr(text + 2, "*/");
++			if (!comment_end)
++				return text + strlen(text);
++			text = comment_end + 2;
++			continue;
++		}
++		return text;
++	}
++}
++
++static char *glsl_find_statement_boundary(char *text) {
++	unsigned int parentheses = 0;
++	unsigned int brackets = 0;
++
++	while (*text) {
++		if (text[0] == '/' && (text[1] == '/' || text[1] == '*')) {
++			text = glsl_skip_space_and_comments(text);
++			if (!*text)
++				return NULL;
++			continue;
++		}
++		if (*text == '(')
++			parentheses++;
++		else if (*text == ')' && parentheses)
++			parentheses--;
++		else if (*text == '[')
++			brackets++;
++		else if (*text == ']' && brackets)
++			brackets--;
++		else if (!parentheses && !brackets &&
++			(*text == ';' || *text == '{' || *text == '}'))
++			return text;
++		text++;
++	}
++	return NULL;
++}
++
++static char *glsl_find_matching_brace(char *open_brace) {
++	unsigned int depth = 0;
++	char *text = open_brace;
++
++	while (*text) {
++		if (text[0] == '/' && (text[1] == '/' || text[1] == '*')) {
++			text = glsl_skip_space_and_comments(text);
++			if (!*text)
++				return NULL;
++			continue;
++		}
++		if (*text == '{')
++			depth++;
++		else if (*text == '}' && depth && --depth == 0)
++			return text;
++		text++;
++	}
++	return NULL;
++}
++
++static GLboolean glsl_starts_global_type(char *text) {
++	static const char *types[] = {
++		"float", "int", "vec", "ivec", "mat", "const",
++		"lowp", "mediump", "highp"
++	};
++	static const size_t lengths[] = { 5, 3, 3, 4, 3, 5, 4, 7, 5 };
++	unsigned int i;
++
++	for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
++		if (!strncmp(text, types[i], lengths[i])) {
++			char next = text[lengths[i]];
++			if (next == ' ' || next == '\t' || next == '\r' || next == '\n')
++				return GL_TRUE;
++			if ((!strcmp(types[i], "vec") || !strcmp(types[i], "ivec") ||
++				!strcmp(types[i], "mat")) && next >= '2' && next <= '4')
++				return GL_TRUE;
++		}
++	}
++	return GL_FALSE;
++}
++
+ GLboolean glsl_handle_globals(char *txt, glsl_buffer *out, GLsizei preamble_size) {
+ 	GLboolean has_globals = GL_FALSE;
+ 	uint32_t globals_count = 0;
+ 	char *src = txt;
+-	char *type = txt + preamble_size;
+-	char *last_func_start = strstr(type, "{");
+-	char *last_func_end = strstr(last_func_start, "}");
+-	char *next_func_start = strstr(last_func_start + 1, "{");
+-	// Branch inside a function, skipping until end of function
+-	while (next_func_start && next_func_start < last_func_end) {
+-		last_func_end = strstr(last_func_end + 1, "}");
+-		next_func_start = strstr(next_func_start + 1, "{");
+-	}
++	char *type;
++	char *text_end;
++
++	if (!txt || !out || preamble_size < 0)
++		return GL_FALSE;
++	text_end = txt + strlen(txt);
++	if ((size_t)preamble_size > (size_t)(text_end - txt))
++		return GL_FALSE;
++	type = txt + preamble_size;
++
+ 	// First pass: marking all global variables
+-	while (type) {
+-		while (*type == ' ' || *type == '\t' || *type == '\r' || *type == '\n') {
+-			type++;
+-		}
+-		if (*type == 0)
++	while (type < text_end) {
++		char *boundary;
++		char *block_end;
++
++		type = glsl_skip_space_and_comments(type);
++		if (type >= text_end || !*type)
+ 			break;
+-		if (!strncmp(type, "float", 5) ||
+-			!strncmp(type, "int", 3) || 
+-			!strncmp(type, "vec", 3) ||
+-			!strncmp(type, "ivec", 4) ||
+-			!strncmp(type, "mat", 3) ||
+-			!strncmp(type, "const", 5) ||
+-			!strncmp(type, "lowp", 4) ||
+-			!strncmp(type, "mediump", 7) ||
+-			!strncmp(type, "highp", 5)
+-		) {
+-			char *var_end = strstr(type, ";");
+-HANDLE_VAR:
+-			if (last_func_start && last_func_end && type > last_func_start && var_end < last_func_end) { // Var is inside a function, skipping
+-				type = last_func_end + 1;
+-			} else if (last_func_end && type > last_func_end) { // Var is after last function, need to update last function
+-				last_func_start = next_func_start;
+-				last_func_end = strstr(last_func_end + 1, "}");
+-				if (last_func_start) {
+-					next_func_start = strstr(last_func_start + 1, "{");
+-				}
+-				// Branch inside a function, skipping until end of function
+-				while (next_func_start && next_func_start < last_func_end) {
+-					last_func_end = strstr(last_func_end + 1, "}");
+-					next_func_start = strstr(next_func_start + 1, "{");
+-				}
+-				goto HANDLE_VAR;
+-			} else if (var_end < last_func_start || !last_func_start) { // Var is prior a function, handling it
+-				type[0] = '\v';
+-				type = var_end + 1;
+-				has_globals = GL_TRUE;
+-				globals_count++;
+-			} else { // Var is a function, skipping
+-				type = last_func_end + 1;
+-			}
++
++		boundary = glsl_find_statement_boundary(type);
++		if (!boundary)
++			break;
++
++		if (glsl_starts_global_type(type) && *boundary == ';') {
++			/* We are at top level: function bodies are skipped as balanced blocks,
++			 * so a type token here is a global declaration, not a local. */
++			type[0] = '\v';
++			type = boundary + 1;
++			has_globals = GL_TRUE;
++			globals_count++;
+ 		} else {
+-			type = strstr(type, ";");
+-			if (type)
+-				type++;
++			if (*boundary == '{') {
++				block_end = glsl_find_matching_brace(boundary);
++				if (!block_end)
++					break;
++				type = block_end + 1;
++				if (*type == ';')
++					type++;
++			} else {
++				type = boundary + 1;
++			}
+ 		}
+ 	}
+ 	// Second pass: replacing all marked variables
+@@ -1281,6 +1359,7 @@ LOOP_START:
+ }
+ 
+ void glsl_translator_process(shader *s) {
++	halo_vita_glsl_checkpoint(s->type == GL_VERTEX_SHADER ? "VitaGL translator begin: vertex" : "VitaGL translator begin: fragment");
+ #ifdef HAVE_FIXED_ATTRIBUTES
+ 	glsl_attributes_num = 0;
+ #endif
+@@ -1323,7 +1402,9 @@ void glsl_translator_process(shader *s) {
+ 	vgl_log("%s:%d %s: GLSL translation input:\n\n%s\n\n", __FILE__, __LINE__, __func__, input);
+ #endif
+ 
++	halo_vita_glsl_checkpoint("VitaGL preprocessor begin");
+ 	char *out = glsl_preprocessor_run("full", input);
++	halo_vita_glsl_checkpoint("VitaGL preprocessor returned");
+ 	vgl_free(input);
+ #ifdef DEBUG_GLSL_PREPROCESSOR
+ 	vgl_log("%s:%d %s: GLSL preprocessor output:\n\n%s\n\n", __FILE__, __LINE__, __func__, out);
+@@ -1439,10 +1520,14 @@ void glsl_translator_process(shader *s) {
+ 
+ 	switch (glsl_sema_mode) {
+ 		case VGL_MODE_SHADER_PAIR:
++			halo_vita_glsl_checkpoint("VitaGL shader-pair semantic translation begin");
+ 			glsl_translate_with_shader_pair(text, s->type, hasFrontFacing);
++			halo_vita_glsl_checkpoint("VitaGL shader-pair semantic translation returned");
+ 			break;
+ 		case VGL_MODE_GLOBAL:
++			halo_vita_glsl_checkpoint("VitaGL global semantic translation begin");
+ 			glsl_translate_with_global(text, s->type, hasFrontFacing);
++			halo_vita_glsl_checkpoint("VitaGL global semantic translation returned");
+ 			break;
+ 		default:
+ 			vgl_log("%s:%d %s: Invalid semantic binding resolution mode supplied.\n", __FILE__, __LINE__, __func__);
+@@ -1580,13 +1665,17 @@ void glsl_translator_process(shader *s) {
+ 	vgl_free(s->source);
+ 
+ 	// Manually handle * operator replacements for vector * matrix and matrix * vector operations support
++	halo_vita_glsl_checkpoint("VitaGL vector-matrix rewrite begin");
+ 	if (glsl_inject_mul(work_a.data, src_len, &work_b, preamble_size)) {
+ 		glsl_buffer_swap(&work_a, &work_b);
+ 	}
++	halo_vita_glsl_checkpoint("VitaGL vector-matrix rewrite returned");
+ 	// Manually handle global variables, adding "static" to them
++	halo_vita_glsl_checkpoint("VitaGL global-variable rewrite begin");
+ 	if (glsl_handle_globals(work_a.data, &work_b, preamble_size)) {
+ 		glsl_buffer_swap(&work_a, &work_b);
+ 	}
++	halo_vita_glsl_checkpoint("VitaGL global-variable rewrite returned");
+ #ifdef HAVE_GLSL_UBOS
+ 	// Manually handle ubos
+ 	if (glsl_handle_ubos(work_a.data, &work_b, preamble_size)) {
+@@ -1627,6 +1716,7 @@ void glsl_translator_process(shader *s) {
+ 	}
+ 	s->size = strlen(s->source);
+ 	s->is_glsl = GL_FALSE;
++	halo_vita_glsl_checkpoint(s->type == GL_VERTEX_SHADER ? "VitaGL translator returned: vertex" : "VitaGL translator returned: fragment");
+ }
+ 
+ void glsl_translator_set_process(shader *vs, shader *fs) {

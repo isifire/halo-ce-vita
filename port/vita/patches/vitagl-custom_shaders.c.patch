@@ -1,0 +1,173 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index 3b91d110..39e69d5e 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -26,6 +26,8 @@
+ #include "shared.h"
+ #include "utils/glsl_utils.h"
+ #include "utils/shacccg_paramquery.h"
++
++extern void halo_vita_glsl_checkpoint(const char *message);
+ #if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
+ #define XXH_STATIC_LINKING_ONLY
+ #define XXH_IMPLEMENTATION
+@@ -497,7 +499,7 @@ static char *shark_log = NULL;
+ #ifdef STRICT_UNIFORMS_COMPLIANCE
+ static inline __attribute__((always_inline)) uniform *get_uniform_from_ptr(GLint ptr, uint32_t *offset) {
+ 	uniform_location u;
+-	u.raw = ptr;
++	u.raw = ptr - 1; /* Keep zero reserved without losing program 0/uniform 0. */
+ 	uniform *ret = u.is_vertex ? &progs[u.program_idx].vert_uniforms[u.uniform_idx] : &progs[u.program_idx].frag_uniforms[u.uniform_idx];
+ 	*offset = u.offset;
+ 	return ret;
+@@ -521,12 +523,10 @@ void release_shader(shader *s) {
+ 			vgl_free(s->unif_blk);
+ 			s->unif_blk = b;
+ 		}
++	}
+ #ifdef HAVE_SHARK_LOG
+-		if (s->log) {
+-			vgl_free(s->log);
+-		}
++	if (s->log) vgl_free(s->log);
+ #endif
+-	}
+ 	if (s->source) {
+ 		vgl_free(s->source);
+ 	}
+@@ -732,13 +732,26 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
+ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings) {
+ #endif
+ 	// Compiling shader source
++	halo_vita_glsl_checkpoint(s->type == GL_FRAGMENT_SHADER ? "VitaGL Cg compiler begin: fragment" : "VitaGL Cg compiler begin: vertex");
+ 	s->prog = shark_compile_shader_extended((const char *)s->source, &s->size, s->type == GL_FRAGMENT_SHADER ? SHARK_FRAGMENT_SHADER : SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
++	halo_vita_glsl_checkpoint(s->prog ? "VitaGL Cg compiler returned: success" : "VitaGL Cg compiler returned: failure");
+ 	if (s->prog) {
+ 		vgl_free(s->source);
+ 		s->source = NULL;
+ 		SceGxmProgram *res = (SceGxmProgram *)vglMalloc(s->size);
++		if (!res) {
++			s->prog = NULL;
++			halo_vita_glsl_checkpoint("VitaGL shader binary allocation failed");
++			goto compile_output;
++		}
+ 		vgl_fast_memcpy((void *)res, (void *)s->prog, s->size);
+ 		int r = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, res, &s->id);
++		if (r) {
++			vgl_free(res);
++			s->prog = NULL;
++			halo_vita_glsl_checkpoint("VitaGL shader registration failed");
++			goto compile_output;
++		}
+ #ifdef LOG_ERRORS
+ 		if (r) {
+ 			vgl_log("%s:%d %s: Program failed to register on sceGxm (%s).\n", __FILE__, __LINE__, __func__, get_gxm_error_literal(r));
+@@ -764,14 +777,22 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
+ 			param = sceShaccCgGetNextParameter(param);
+ 		}
+ 	}
++compile_output:
+ #ifdef HAVE_SHARK_LOG
+ 	if (s->log)
+ 		vgl_free(s->log);
+ 	s->log = shark_log;
+ 	shark_log = NULL;
++	if (s->log && *s->log)
++		halo_vita_glsl_checkpoint(s->log);
+ #endif
++	if (!s->prog && s->source) {
++		halo_vita_glsl_checkpoint("Rejected Cg source follows:");
++		halo_vita_glsl_checkpoint(s->source);
++	}
+ 	shark_clear_output();
+ #ifdef HAVE_SHADER_CACHE
++	if (!s->prog) return;
+ 	SceUID f = sceIoOpen(cache_fname, SCE_O_CREAT | SCE_O_WRONLY | SCE_O_TRUNC, 0777);
+ 	size_t sz;
+ 	void *buf = serialize_shader(NULL, &sz, s, save_bindings);
+@@ -1731,19 +1752,19 @@ void shark_log_cb(const char *msg, shark_log_level msg_level, int line) {
+ 	GLboolean is_extra_line = shark_log ? GL_TRUE : GL_FALSE;
+ 	switch (msg_level) {
+ 	case SHARK_LOG_INFO:
+-		sprintf(newline, "%sI] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
++		snprintf(newline, sizeof(newline), "%sI] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
+ #ifdef LOG_ERRORS
+ 		vgl_log("Shader Compiler: I] %s on line %d.\n", msg, line);
+ #endif
+ 		break;
+ 	case SHARK_LOG_WARNING:
+-		sprintf(newline, "%sW] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
++		snprintf(newline, sizeof(newline), "%sW] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
+ #ifdef LOG_ERRORS
+ 		vgl_log("Shader Compiler: W] %s on line %d.\n", msg, line);
+ #endif
+ 		break;
+ 	case SHARK_LOG_ERROR:
+-		sprintf(newline, "%sE] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
++		snprintf(newline, sizeof(newline), "%sE] %s on line %d.", is_extra_line ? "\n" : "", msg, line);
+ #ifdef LOG_ERRORS
+ 		vgl_log("Shader Compiler: E] %s on line %d.\n", msg, line);
+ #endif
+@@ -2359,8 +2380,12 @@ void glGetProgramiv(GLuint progr, GLenum pname, GLint *params) {
+ void glLinkProgram(GLuint progr) {
+ 	THREAD_SAFE()
+ 
++	if (!progr || progr > MAX_CUSTOM_PROGRAMS)
++		return;
+ 	// Grabbing passed program
+ 	program *p = &progs[progr - 1];
++	if (!p->vshader || !p->fshader)
++		return;
+ #if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+ 	p->vertex_layout_version = ++vertex_program_layout_current_ver;
+ #endif
+@@ -2417,22 +2442,35 @@ void glLinkProgram(GLuint progr) {
+ #endif
+ 		if (!p->vshader->prog || !p->fshader->prog) {
+ 			if (p->vshader->is_glsl || p->fshader->is_glsl) {
++				halo_vita_glsl_checkpoint("VitaGL glLinkProgram deferred translator begin");
+ 				glsl_translator_set_process(p->vshader, p->fshader);
++				halo_vita_glsl_checkpoint("VitaGL glLinkProgram deferred translator returned");
+ 			}
+ 			if (!p->vshader->prog) {
+ #ifdef HAVE_SHADER_CACHE
+ 				fname = vert_fname;
+ #endif
++				halo_vita_glsl_checkpoint("VitaGL deferred vertex compilation begin");
+ 				vgl_compile_shader(p->vshader, GL_TRUE);
++				halo_vita_glsl_checkpoint("VitaGL deferred vertex compilation returned");
+ 			}
+ 			if (!p->fshader->prog) {
+ #ifdef HAVE_SHADER_CACHE
+ 				fname = frag_fname;
+ #endif
++				halo_vita_glsl_checkpoint("VitaGL deferred fragment compilation begin");
+ 				vgl_compile_shader(p->fshader, GL_TRUE);
++				halo_vita_glsl_checkpoint("VitaGL deferred fragment compilation returned");
+ 			}
+ 		}
+ 
++		/* Deferred compile status is only known here. Never pass a rejected
++		 * shader to GXM reflection; that dereferences NULL at offset 0x24. */
++		if (!p->vshader->prog || !p->fshader->prog) {
++			glsl_sema_mode = VGL_MODE_POSTPONED;
++			halo_vita_glsl_checkpoint("VitaGL link rejected: shader compilation failed; no GXM reflection");
++			return;
++		}
+ 		// Setting progressive default attribute bindings
+ 		set_default_attrib_binding();
+ 
+@@ -2764,11 +2802,12 @@ GLint glGetUniformLocation(GLuint prog, const GLchar *name) {
+ 	for (uint32_t i = 0; i < cnt; i++) {
+ 		if (j[i].ptr == u) {
+ #ifdef STRICT_UNIFORMS_COMPLIANCE			
++			if (index < 0 || index >= sceGxmProgramParameterGetArraySize(u)) return -1;
+ 			ret.offset = index;
+ 			ret.zero = 0;
+ 			ret.program_idx = prog - 1;
+ 			ret.uniform_idx = i;
+-			return ret.raw;
++			return ret.raw + 1;
+ #else
+ 			return -((GLint)&j[i]);
+ #endif

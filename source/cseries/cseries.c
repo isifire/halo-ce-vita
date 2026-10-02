@@ -465,6 +465,18 @@ char *csstrncpy(
 	const char *s2,
 	unsigned long size)
 {
+#ifdef HALO_VITA
+	if (!s1 || !s2)
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log)
+		{
+			fprintf(log, "vita_string_fault: csstrncpy dst=%p src=%p size=%lu caller=%p\n",
+				s1, s2, size, __builtin_return_address(0));
+			fclose(log);
+		}
+	}
+#endif
 	cseries_match_assert("c:\\halo\\SOURCE\\cseries\\cseries.c", 335, s1 && s2);
 	cseries_match_assert("c:\\halo\\SOURCE\\cseries\\cseries.c", 336, size>=0 && size<MAXIMUM_STRING_SIZE);
 

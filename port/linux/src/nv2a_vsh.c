@@ -18,6 +18,9 @@ clip-space position again.
 */
 
 #include "xgpu.h"
+#ifdef HALO_VITA
+#include "nv2a_cg.h"
+#endif
 
 #include <stdlib.h>
 
@@ -127,7 +130,15 @@ static void operand(struct xgpu_text *text, const DWORD *instruction, char which
 		break;
 	case _mux_constant:
 		if (relative)
+		{
+#ifdef HALO_VITA
+			/* SHARK has only floating-point clamp overloads. Integer arguments
+			 * are ambiguous (unlike desktop Cg), rejecting skinned model shaders. */
+			xgpu_text_append(text, "c[nv2a_constant_index(a0 + %lu)]", field(instruction, 1, 13, 8));
+#else
 			xgpu_text_append(text, "c[clamp(a0 + %lu, 0, %d)]", field(instruction, 1, 13, 8), XGPU_VERTEX_CONSTANT_COUNT - 1);
+#endif
+		}
 		else
 			xgpu_text_append(text, "c[%lu]", field(instruction, 1, 13, 8));
 		break;
@@ -140,7 +151,11 @@ static void operand(struct xgpu_text *text, const DWORD *instruction, char which
 }
 
 static const char shader_prologue[] =
-#ifdef HALO_ANDROID
+#ifdef HALO_VITA
+	NV2A_CG_TYPES
+	NV2A_CG_OUTPUTS
+	"int nv2a_constant_index(int value) { return value < 0 ? 0 : (value > 191 ? 191 : value); }\n"
+#elif defined(HALO_ANDROID)
 	/* the #version line comes first, from the context's capabilities */
 	"precision highp float;\n"
 	"precision highp int;\n"
@@ -153,6 +168,7 @@ static const char shader_prologue[] =
 	"uniform float point_size;\n"
 	/* columns the menus shift by to center on a wide screen (d3d8_gl.c) */
 	"uniform float screen_offset;\n"
+#ifndef HALO_VITA
 	"out vec4 xD0;\n"
 	"out vec4 xD1;\n"
 	"out vec4 xB0;\n"
@@ -170,6 +186,7 @@ static const char shader_prologue[] =
 	"	int z = int(p) >> 22;\n"
 	"	return vec4(float(x) / 1023.0, float(y) / 1023.0, float(z) / 511.0, 1.0);\n"
 	"}\n"
+#endif
 	"vec4 nv2a_rcc(float x)\n"
 	"{\n"
 	"	float r = 1.0 / x;\n"
@@ -206,10 +223,15 @@ char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instru
 	xgpu_text_append(&text, "%s", shader_prologue);
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
+#ifdef HALO_VITA
+		/* Packed inputs are decoded at attribute upload on Vita. */
+		xgpu_text_append(&text, "varying in float4 v%lu_in : ATTR%lu;\n", index, index);
+#else
 		if (packed_attribute_mask & (1UL << index))
 			xgpu_text_append(&text, "layout(location = %lu) in uint v%lu_packed;\n", index, index);
 		else
 			xgpu_text_append(&text, "layout(location = %lu) in vec4 v%lu_in;\n", index, index);
+#endif
 	}
 
 	xgpu_text_append(&text, "void main()\n{\n");
@@ -361,11 +383,17 @@ char *nv2a_vertex_shader_to_glsl(const DWORD *instructions, unsigned long instru
 		"\tgl_Position.y = -gl_Position.y;\n"
 		"\tgl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n"
 #endif
+#ifdef HALO_VITA
+		"\tgl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n"
+#else
 		"\tgl_PointSize = oPts.x;\n"
+#endif
 		"\txD0 = clamp(oD0, 0.0, 1.0);\n"
 		"\txD1 = clamp(oD1, 0.0, 1.0);\n"
+#ifndef HALO_VITA
 		"\txB0 = clamp(oB0, 0.0, 1.0);\n"
 		"\txB1 = clamp(oB1, 0.0, 1.0);\n"
+#endif
 		"\txT0 = oT0;\n"
 		"\txT1 = oT1;\n"
 		"\txT2 = oT2;\n"

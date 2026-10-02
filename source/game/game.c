@@ -685,6 +685,12 @@ boolean game_load(
 
 	random_seed_debug_log(TRUE);
 	csmemcpy(&game_globals->options, options, sizeof(*options));
+#ifdef HALO_VITA
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log) { fprintf(log, "campaign_load: game_load options=%p map='%.255s' stored='%.255s'\n", options, options->map_name, game_globals->options.map_name); fclose(log); }
+	}
+#endif
 	if (scenario_load(options->map_name))
 	{
 		game_globals->map_loaded = TRUE;

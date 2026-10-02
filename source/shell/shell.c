@@ -20,12 +20,14 @@ SHELL.C
 static boolean application_paused;
 
 #ifdef HALO_VITA
+#include <psp2/kernel/processmgr.h>
 static void shell_vita_boot_log(const char *message)
 {
 	FILE *file = fopen("ux0:data/halo/boot.log", "a");
 	if (file)
 	{
-		fprintf(file, "shell_initialize: %s\n", message);
+		fprintf(file, "shell_initialize: %s time_ms=%lu\n", message,
+			(unsigned long)(sceKernelGetProcessTimeWide() / 1000));
 		fclose(file);
 	}
 }

@@ -5,6 +5,7 @@
 #include "halo_vita_memory.h"
 
 unsigned int _newlib_heap_size_user = 32u * 1024u * 1024u;
+unsigned int sceUserMainThreadStackSize = 2u * 1024u * 1024u;
 
 int halo_vita_arena_bind(void *base);
 int halo_vita_arena_unbind(void);

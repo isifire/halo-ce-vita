@@ -99,6 +99,9 @@ static void vita_sky_log(
 	struct sky const *sky,
 	struct model const *model)
 {
+	static unsigned long s_sky_count = 0;
+	if (s_sky_count++ >= 12)
+		return;
 	FILE *log = fopen("ux0:data/halo/boot.log", "a");
 
 	if (log)

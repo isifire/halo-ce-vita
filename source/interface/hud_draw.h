@@ -55,8 +55,15 @@ struct weapon_hud_overlay_definition;
 
 /* ---------- prototypes/HUD_DRAW.C */
 
+#ifdef HALO_VITA
+/* Capture the guarded function's own saved return address. ARM has no
+ * guaranteed caller frame chain: __builtin_return_address(1) in a helper
+ * dereferences arbitrary r11 contents when the caller omits its frame. */
+#define get_return_eip() ((long)__builtin_return_address(0))
+#else
 long get_return_eip(
 	void);
+#endif
 real hud_globals_get_scale(
 	boolean in_multiplayer);
 void hud_retrieve_bitmap_and_bounding_rect(

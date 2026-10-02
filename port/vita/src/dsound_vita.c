@@ -16,6 +16,7 @@
 #include <psp2/audioout.h>
 #include <psp2/kernel/threadmgr.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,6 +64,7 @@ struct vita_stream
 	IDirectSoundStream object;
 	struct vita_stream *next;
 	ULONG reference_count;
+	BOOL destroying;
 	LPFNXMEDIAOBJECTCALLBACK callback;
 	LPVOID context;
 
@@ -99,6 +101,15 @@ struct vita_stream
 };
 
 static struct vita_stream *streams = NULL;
+static BOOL game_audio_ready = FALSE;
+
+/* Keep queued packets/cursors intact until the first game frame is visible. */
+void halo_vita_audio_frame_presented(void)
+{
+	mixer_lock();
+	game_audio_ready = TRUE;
+	mixer_unlock();
+}
 
 /* the listener, in DirectSound's left-handed +y up space */
 static struct
@@ -141,11 +152,7 @@ static const int ima_step_table[89] =
 static int ima_expand(int nibble, int *predictor, int *index)
 {
 	int step = ima_step_table[*index];
-	int difference = step >> 3;
-
-	if (nibble & 1) difference += step >> 2;
-	if (nibble & 2) difference += step >> 1;
-	if (nibble & 4) difference += step;
+	int difference = ((2 * (nibble & 7) + 1) * step) >> 3;
 	if (nibble & 8) difference = -difference;
 	*predictor += difference;
 	if (*predictor > 32767) *predictor = 32767;
@@ -180,6 +187,9 @@ static short *decode_adpcm(const unsigned char *source, unsigned long size, unsi
 			int predictor = (short)(header[0] | (header[1] << 8));
 			int index = header[2] > 88 ? 88 : header[2];
 			unsigned long group, byte;
+			/* Xbox outputs the header predictor followed by 63 decoded
+			 * nibbles, not all 64 nibbles without the predictor. */
+			output[channel] = (short)predictor;
 
 			for (group = 0; group < 8; group++)
 			{
@@ -187,10 +197,11 @@ static short *decode_adpcm(const unsigned char *source, unsigned long size, unsi
 
 				for (byte = 0; byte < 4; byte++)
 				{
-					unsigned long sample = group * 8 + byte * 2;
+					unsigned long sample = 1 + group * 8 + byte * 2;
 
 					output[sample * channels + channel] = (short)ima_expand(nibbles[byte] & 0xf, &predictor, &index);
-					output[(sample + 1) * channels + channel] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
+					if (sample + 1 < XBOX_ADPCM_BLOCK_SAMPLES)
+						output[(sample + 1) * channels + channel] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
 				}
 			}
 		}
@@ -388,15 +399,27 @@ static void mix_voice(struct vita_stream *stream, float *output, unsigned long f
 	stream->current_right = target_right;
 }
 
-static void mix(float *output, unsigned long frames)
+static void mix(float *output, unsigned long frames, unsigned long *voice_count, unsigned long *packet_count)
 {
 	struct vita_stream *stream;
 	unsigned long sample;
 
+	*voice_count = 0;
+	*packet_count = 0;
 	memset(output, 0, frames * OUTPUT_CHANNELS * sizeof(float));
 	mixer_lock();
+	if (!game_audio_ready)
+	{
+		mixer_unlock();
+		return;
+	}
 	for (stream = streams; stream; stream = stream->next)
+	{
+		if (!stream->paused && stream->packet_count && stream->sample_rate)
+			++*voice_count;
+		*packet_count += stream->packet_count;
 		mix_voice(stream, output, frames);
+	}
 	mixer_unlock();
 
 	/* Soft limiting curve */
@@ -421,33 +444,139 @@ static int audio_port = -1;
 static volatile BOOL audio_running = FALSE;
 static BOOL audio_started = FALSE;
 
+#define AUDIO_DIAG_WINDOW_BLOCKS 128
+struct audio_diag_window
+{
+	unsigned long blocks;
+	unsigned long samples;
+	unsigned long voice_blocks;
+	unsigned long packet_blocks;
+	unsigned long silent_blocks;
+	double sum;
+	double absolute_sum;
+	double square_sum;
+	float peak;
+	short minimum;
+	short maximum;
+	int last_output_result;
+	unsigned long output_errors;
+};
+static struct audio_diag_window audio_diag;
+
+static void audio_log_port_status(const char *event, int result)
+{
+	FILE *log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		fprintf(log, "audio_diag: %s result=%d port=%d frames=%d rate=%d channels=stereo\n",
+			event, result, audio_port, MIX_CHUNK_FRAMES, OUTPUT_RATE);
+		fclose(log);
+	}
+}
+
+static void audio_diag_flush(void)
+{
+	struct audio_diag_window window;
+	int ready = FALSE;
+	FILE *log;
+
+	mixer_lock();
+	if (audio_diag.blocks >= AUDIO_DIAG_WINDOW_BLOCKS)
+	{
+		window = audio_diag;
+		memset(&audio_diag, 0, sizeof(audio_diag));
+		audio_diag.minimum = 32767;
+		audio_diag.maximum = -32768;
+		ready = TRUE;
+	}
+	mixer_unlock();
+	if (!ready)
+		return;
+
+	log = fopen("ux0:data/halo/boot.log", "a");
+	if (log)
+	{
+		double count = window.samples ? (double)window.samples : 1.0;
+		fprintf(log,
+			"audio_diag: window_blocks=%lu voices_avg=%.2f packets_avg=%.2f silent_blocks=%lu "
+			"pcm_peak=%.5f pcm_abs_avg=%.5f pcm_rms=%.5f pcm_dc=%.5f pcm_min=%d pcm_max=%d "
+			"port=%d output_result=%d output_errors=%lu\n",
+			window.blocks, (double)window.voice_blocks / (window.blocks ? window.blocks : 1),
+			(double)window.packet_blocks / (window.blocks ? window.blocks : 1), window.silent_blocks,
+			(double)window.peak, window.absolute_sum / count, sqrt(window.square_sum / count),
+			window.sum / count, (int)window.minimum, (int)window.maximum,
+			audio_port, window.last_output_result, window.output_errors);
+		fclose(log);
+	}
+}
+
 static int audio_thread_func(SceSize args, void *argp)
 {
 	(void)args;
 	(void)argp;
 	static float float_buffer[MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
-	static short pcm_buffer[MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
+	/* Output waits for the PREVIOUS submission, then queues this buffer.
+	 * Keep the queued samples intact while preparing the next submission. */
+	static short pcm_buffers[2][MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
+	unsigned int pcm_index = 0;
+	static unsigned long voice_count, packet_count;
 
 	while (audio_running)
 	{
-		mix(float_buffer, MIX_CHUNK_FRAMES);
+		short *pcm_buffer = pcm_buffers[pcm_index];
+		float peak = 0.0f;
+		double sum = 0.0, absolute_sum = 0.0, square_sum = 0.0;
+		short minimum = 32767, maximum = -32768;
+		unsigned long i;
+		int output_result;
 
-		for (int i = 0; i < MIX_CHUNK_FRAMES * OUTPUT_CHANNELS; i++)
+		mix(float_buffer, MIX_CHUNK_FRAMES, &voice_count, &packet_count);
+
+		for (i = 0; i < MIX_CHUNK_FRAMES * OUTPUT_CHANNELS; i++)
 		{
 			float val = float_buffer[i];
+			short sample;
 			if (val > 1.0f) val = 1.0f;
 			else if (val < -1.0f) val = -1.0f;
-			pcm_buffer[i] = (short)(val * 32767.0f);
+			sample = (short)(val * 32767.0f);
+			pcm_buffer[i] = sample;
+			if (sample < minimum) minimum = sample;
+			if (sample > maximum) maximum = sample;
+			val = (float)sample * (1.0f / 32768.0f);
+			if (fabsf(val) > peak) peak = fabsf(val);
+			sum += val;
+			absolute_sum += fabsf(val);
+			square_sum += (double)val * val;
 		}
 
 		if (audio_port >= 0)
 		{
-			sceAudioOutOutput(audio_port, pcm_buffer);
+			output_result = sceAudioOutOutput(audio_port, pcm_buffer);
+			pcm_index ^= 1;
 		}
 		else
 		{
+			output_result = audio_port;
 			sceKernelDelayThread((MIX_CHUNK_FRAMES * 1000000) / OUTPUT_RATE);
 		}
+
+		/* Collect cheap signal/output metrics here; file I/O is deferred to the
+		 * game thread so diagnostics cannot stall the real-time audio producer. */
+		mixer_lock();
+		if (!audio_diag.samples || minimum < audio_diag.minimum) audio_diag.minimum = minimum;
+		if (!audio_diag.samples || maximum > audio_diag.maximum) audio_diag.maximum = maximum;
+		if (peak > audio_diag.peak) audio_diag.peak = peak;
+		audio_diag.blocks++;
+		audio_diag.samples += MIX_CHUNK_FRAMES * OUTPUT_CHANNELS;
+		audio_diag.voice_blocks += voice_count;
+		audio_diag.packet_blocks += packet_count;
+		if (peak == 0.0f) audio_diag.silent_blocks++;
+		audio_diag.sum += sum;
+		audio_diag.absolute_sum += absolute_sum;
+		audio_diag.square_sum += square_sum;
+		audio_diag.last_output_result = output_result;
+		if (output_result < 0) audio_diag.output_errors++;
+		mixer_unlock();
 	}
 	return 0;
 }
@@ -460,11 +589,17 @@ static void audio_start(void)
 	master_volume = 1.0f;
 
 	audio_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, MIX_CHUNK_FRAMES, OUTPUT_RATE, SCE_AUDIO_OUT_MODE_STEREO);
+	audio_log_port_status("open_port", audio_port);
 	audio_running = TRUE;
-	audio_thread_uid = sceKernelCreateThread("halo_dsound_thread", audio_thread_func, 0x10000100 + 20, 0x10000, 0, 0, NULL);
+	audio_thread_uid = sceKernelCreateThread("halo_dsound_thread", audio_thread_func, 0x10000100 - 10, 0x10000, 0, 0, NULL);
 	if (audio_thread_uid >= 0)
 	{
-		sceKernelStartThread(audio_thread_uid, 0, NULL);
+		int result = sceKernelStartThread(audio_thread_uid, 0, NULL);
+		audio_log_port_status("start_thread", result);
+	}
+	else
+	{
+		audio_log_port_status("create_thread", audio_thread_uid);
 	}
 }
 
@@ -501,15 +636,24 @@ static void stream_complete_head(struct vita_stream *stream, DWORD status, DWORD
 	}
 }
 
+static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object);
+
 static void streams_complete_finished(void)
 {
 	struct vita_stream *stream;
 
 	mixer_lock();
-	for (stream = streams; stream; stream = stream->next)
-	{
-		while (stream->packet_count && stream->packets[stream->packet_head].finished)
-			stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, stream->packets[stream->packet_head].packet.dwMaxSize);
+	for (;;) {
+		/* A callback may release this voice or another voice. Pin the selected
+		 * voice and restart the list search instead of retaining next pointers. */
+		for (stream = streams; stream; stream = stream->next)
+			if (!stream->destroying && stream->packet_count && stream->packets[stream->packet_head].finished) break;
+		if (!stream) break;
+		++stream->reference_count;
+		stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, stream->packets[stream->packet_head].packet.dwMaxSize);
+		mixer_unlock();
+		stream_release(&stream->object);
+		mixer_lock();
 	}
 	mixer_unlock();
 }
@@ -541,13 +685,10 @@ static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
 	ULONG count;
 
 	mixer_lock();
+	if (stream->destroying) { mixer_unlock(); return 0; }
 	count = --stream->reference_count;
-	mixer_unlock();
-	if (count)
-		return count;
-
-	stream_flush(object);
-	mixer_lock();
+	if (count) { mixer_unlock(); return count; }
+	stream->destroying = TRUE;
 	for (link = &streams; *link; link = &(*link)->next)
 	{
 		if (*link == stream)
@@ -557,6 +698,7 @@ static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
 		}
 	}
 	mixer_unlock();
+	stream_flush(object);
 	free(stream);
 	return 0;
 }
@@ -631,8 +773,11 @@ static HRESULT STDMETHODCALLTYPE stream_discontinuity(IDirectSoundStream *object
 static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 {
 	struct vita_stream *stream = stream_from_interface(object);
+	BOOL pinned;
 
 	mixer_lock();
+	pinned = !stream->destroying;
+	if (pinned) ++stream->reference_count;
 	while (stream->packet_count)
 	{
 		struct voice_packet *head = &stream->packets[stream->packet_head];
@@ -642,6 +787,7 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 	}
 	stream->cursor = 0.0;
 	mixer_unlock();
+	if (pinned) stream_release(object);
 	return S_OK;
 }
 
@@ -684,6 +830,7 @@ ULONG WINAPI IDirectSound_Release(LPDIRECTSOUND sound)
 VOID WINAPI DirectSoundDoWork(void)
 {
 	streams_complete_finished();
+	audio_diag_flush();
 }
 
 VOID WINAPI DirectSoundUseFullHRTF(void)

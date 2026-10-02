@@ -889,7 +889,13 @@ static char const *expression_get_function_name(
 			return hs_function_get((word)syntax_node->index)->name;
 		}
 
+#ifdef HALO_VITA
+		/* The first local follows the allocator's ARM alignment padding. */
+		next_expression_index = *(long *)
+			(((unsigned long)thread->stack->data+3UL)&~3UL);
+#else
 		next_expression_index = *(long *)thread->stack->data;
+#endif
 		if (next_expression_index == NONE)
 			return "(end of script)";
 
@@ -1298,6 +1304,11 @@ static void hs_stack_push(
 	struct hs_thread_datum *thread = hs_thread_get(thread_index);
 	struct hs_stack_frame *new_frame = (struct hs_stack_frame *)
 		((byte *)thread->stack+thread->stack->size+sizeof(struct hs_stack_frame));
+#ifdef HALO_VITA
+	/* Xbox permits unaligned frames; ARM pointer/float accesses do not. */
+	new_frame = (struct hs_stack_frame *)
+		(((unsigned long)new_frame+3UL)&~3UL);
+#endif
 
 	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x35e, thread_index,
 		(byte *) (new_frame+1)<thread->stack_data+HS_THREAD_STACK_SIZE,
@@ -2571,16 +2582,29 @@ static void *hs_stack_allocate(
 	struct hs_thread_datum *thread = hs_thread_get(thread_index);
 	struct hs_stack_frame *frame = thread->stack;
 	void *result;
+#ifdef HALO_VITA
+	long padding;
+#endif
 
 	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x37d, thread_index,
 		valid_thread(thread), "corrupted stack.");
 	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x37e, thread_index,
 		size, "attempt to allocate zero space from the stack.");
+#ifdef HALO_VITA
+	/* data starts at byte 14 on ARM, and short/boolean locals also shift the
+	   cursor. Align the ADDRESS, not just the requested size. Include padding
+	   in the bounds check and cursor so suspended frames replay identically. */
+	padding = (long)((0UL-(unsigned long)(frame->data+frame->size))&3UL);
+	size += padding;
+#endif
 	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x37f, thread_index,
 		frame->data+frame->size+size<=thread->stack_data+HS_THREAD_STACK_SIZE,
 		"stack overflow.");
 
 	result = frame->data+frame->size;
+#ifdef HALO_VITA
+	result = (byte *)result+padding;
+#endif
 	frame->size += (short)size;
 
 	return result;

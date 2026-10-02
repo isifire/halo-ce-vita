@@ -364,6 +364,9 @@ the sources' symbol comments):
 Linux build's list of pick-any inline functions */
 __forceinline void __stdcall D3DDevice_SetRenderState(D3DRENDERSTATETYPE state, DWORD value)
 {
+#ifdef HALO_VITA
+	D3DDevice_SetRenderStateNotInline(state, value);
+#else
 	if (state < D3DRS_SIMPLE_MAX)
 	{
 		D3DDevice_SetRenderState_Simple(D3DSIMPLERENDERSTATEENCODE[state], value);
@@ -408,6 +411,7 @@ __forceinline void __stdcall D3DDevice_SetRenderState(D3DRENDERSTATETYPE state, 
 		default: break;
 		}
 	}
+#endif
 }
 
 D3DINLINE void __stdcall D3DDevice_SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value)

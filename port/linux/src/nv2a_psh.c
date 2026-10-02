@@ -16,6 +16,9 @@ Register values are clamped to [-1, 1] between stages, as on the hardware.
 */
 
 #include "xgpu.h"
+#ifdef HALO_VITA
+#include "nv2a_cg.h"
+#endif
 #include "port_config.h"
 
 #include <stdio.h>
@@ -185,7 +188,11 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 	BOOL unique_c1 = (combiner_count & 0x10000) != 0;
 	BOOL mux_msb = (combiner_count & 0x100) != 0;
 	int portion;
+	char ab_name[16], cd_name[16], sum_name[16];
 
+	/* Keep each stage's temporaries in its own lexical scope. In addition to
+	 * matching the NV2A/Linux emitter, this prevents VitaGL/SceShaccCg from
+	 * having to keep dozens of distinct combiner locals alive in one function. */
 	xgpu_text_append(text, "\t/* combiner stage %d */\n\t{\n", stage);
 	for (portion = 0; portion < 2; portion++)
 	{
@@ -197,6 +204,9 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 		const char *prefix = alpha ? "a" : "c";
 		const char *mapping = output_mapping(flags);
 		char mapped[64];
+		snprintf(ab_name, sizeof(ab_name), "%sAB", prefix);
+		snprintf(cd_name, sizeof(cd_name), "%sCD", prefix);
+		snprintf(sum_name, sizeof(sum_name), "%sSUM", prefix);
 
 		xgpu_text_append(text, "\t\t%s %sA = ", type, prefix);
 		combiner_input(text, (inputs >> 24) & 0xff, alpha, stage, unique_c0, unique_c1);
@@ -209,11 +219,11 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 		xgpu_text_append(text, ";\n");
 
 		if (!alpha && (flags & 0x02))
-			xgpu_text_append(text, "\t\tvec3 cAB = vec3(dot(cA, cB));\n");
+			xgpu_text_append(text, "\t\tvec3 %sAB = vec3(dot(%sA, %sB));\n", prefix, prefix, prefix);
 		else
 			xgpu_text_append(text, "\t\t%s %sAB = %sA * %sB;\n", type, prefix, prefix, prefix);
 		if (!alpha && (flags & 0x01))
-			xgpu_text_append(text, "\t\tvec3 cCD = vec3(dot(cC, cD));\n");
+			xgpu_text_append(text, "\t\tvec3 %sCD = vec3(dot(%sC, %sD));\n", prefix, prefix, prefix);
 		else
 			xgpu_text_append(text, "\t\t%s %sCD = %sC * %sD;\n", type, prefix, prefix, prefix);
 		if (flags & 0x04)
@@ -221,22 +231,22 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 			if (mux_msb)
 				xgpu_text_append(text, "\t\t%s %sSUM = r0.a >= 0.5 ? %sCD : %sAB;\n", type, prefix, prefix, prefix);
 			else
-				xgpu_text_append(text, "\t\t%s %sSUM = (int(r0.a * 255.0 + 0.5) & 1) != 0 ? %sCD : %sAB;\n",
+				xgpu_text_append(text, "\t\t%s %sSUM = mod(floor(r0.a * 255.0 + 0.5), 2.0) >= 1.0 ? %sCD : %sAB;\n",
 					type, prefix, prefix, prefix);
 		}
 		else
 		{
 			xgpu_text_append(text, "\t\t%s %sSUM = %sAB + %sCD;\n", type, prefix, prefix, prefix);
 		}
-		snprintf(mapped, sizeof(mapped), mapping, "%sAB");
+		snprintf(mapped, sizeof(mapped), mapping, ab_name);
 		xgpu_text_append(text, "\t\t%sAB = clamp(", prefix);
 		xgpu_text_append(text, mapped, prefix);
 		xgpu_text_append(text, ", -1.0, 1.0);\n");
-		snprintf(mapped, sizeof(mapped), mapping, "%sCD");
+		snprintf(mapped, sizeof(mapped), mapping, cd_name);
 		xgpu_text_append(text, "\t\t%sCD = clamp(", prefix);
 		xgpu_text_append(text, mapped, prefix);
 		xgpu_text_append(text, ", -1.0, 1.0);\n");
-		snprintf(mapped, sizeof(mapped), mapping, "%sSUM");
+		snprintf(mapped, sizeof(mapped), mapping, sum_name);
 		xgpu_text_append(text, "\t\t%sSUM = clamp(", prefix);
 		xgpu_text_append(text, mapped, prefix);
 		xgpu_text_append(text, ", -1.0, 1.0);\n");
@@ -314,15 +324,17 @@ static void dot_input(struct xgpu_text *text, const DWORD *state, int stage)
 	}
 }
 
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) || defined(HALO_VITA)
 /* ES samplers have no LOD bias: pass D3DTSS_MIPMAPLODBIAS to the lookup */
+#ifdef HALO_ANDROID
 #define SAMPLE_BIAS ", texture_lod_bias[%d]"
+#else
+#define SAMPLE_BIAS ""
+#endif
 #define SHADER_VERSION \
+	"#version 100\n" \
 	"precision highp float;\n" \
-	"precision highp int;\n" \
-	"precision highp sampler2D;\n" \
-	"precision highp sampler3D;\n" \
-	"precision highp samplerCube;\n"
+	"precision highp int;\n"
 #else
 #define SAMPLE_BIAS ""
 #define SHADER_VERSION "#version 450 core\n"
@@ -333,21 +345,36 @@ static void sample(struct xgpu_text *text, const struct nv2a_pixel_shader_key *k
 	switch (key->sampler_type[stage])
 	{
 	case _xgpu_sampler_3d:
-		xgpu_text_append(text, "texture(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+		xgpu_text_append(text,
+#if defined(HALO_VITA)
+			"textureCube(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+#else
+			"texture(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+#endif
 #ifdef HALO_ANDROID
 			, stage
 #endif
 			);
 		break;
 	case _xgpu_sampler_cube:
-		xgpu_text_append(text, "texture(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+		xgpu_text_append(text,
+#if defined(HALO_VITA)
+			"textureCube(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+#else
+			"texture(tex%d, (%s).xyz" SAMPLE_BIAS ")", stage, coordinates
+#endif
 #ifdef HALO_ANDROID
 			, stage
 #endif
 			);
 		break;
 	default:
-		xgpu_text_append(text, "texture(tex%d, (%s).xy * texture_scale[%d].xy" SAMPLE_BIAS ")", stage, coordinates, stage
+		xgpu_text_append(text,
+#if defined(HALO_VITA)
+			"texture2D(tex%d, (%s).xy * texture_scale[%d].xy" SAMPLE_BIAS ")", stage, coordinates, stage
+#else
+			"texture(tex%d, (%s).xy * texture_scale[%d].xy" SAMPLE_BIAS ")", stage, coordinates, stage
+#endif
 #ifdef HALO_ANDROID
 			, stage
 #endif
@@ -541,7 +568,35 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 			"layout(binding = 0, offset = 0) uniform atomic_uint visible_samples;\n");
 	}
 #endif
-	xgpu_text_append(&text,
+#ifdef HALO_VITA
+		xgpu_text_append(&text,
+			NV2A_CG_TYPES
+			"varying in float4 xD0 : COLOR0;\n"
+			"varying in float4 xD1 : COLOR1;\n"
+			"varying in float4 xT0 : TEXCOORD0;\n"
+			"varying in float4 xT1 : TEXCOORD1;\n"
+			"varying in float4 xT2 : TEXCOORD2;\n"
+			"varying in float4 xT3 : TEXCOORD3;\n"
+			"varying in float xFog : TEXCOORD4;\n"
+			"varying out float4 gl_FragColor : COLOR;\n"
+			"uniform vec4 ps_c0[8];\n"
+			"uniform vec4 ps_c1[8];\n"
+			"uniform vec4 ps_final_c0;\n"
+			"uniform vec4 ps_final_c1;\n"
+			"uniform vec4 fog_color;\n"
+			"uniform vec4 fog_parameters;\n"
+			"uniform float alpha_reference;\n"
+			"uniform vec4 bump_matrix[4];\n"
+			"uniform vec4 bump_luminance[4];\n"
+			"uniform vec4 texture_scale[4];\n");
+		for (stage = 0; stage < 4; stage++)
+			xgpu_text_append(&text, "uniform sampler2D tex%d;\n", stage);
+		xgpu_text_append(&text,
+			"float signed_byte(float x) { float b=floor(x*255.0+0.5); return (b>=128.0?b-256.0:b)/127.0; }\n"
+			"vec3 signed_bytes(vec3 x) { return vec3(signed_byte(x.r),signed_byte(x.g),signed_byte(x.b)); }\n"
+		"void main()\n{\n");
+#else
+		xgpu_text_append(&text,
 		SHADER_VERSION
 		"in vec4 xD0;\n"
 		"in vec4 xD1;\n"
@@ -556,7 +611,7 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 		XGPU_PIXEL_UNIFORMS);
 	for (stage = 0; stage < 4; stage++)
 		xgpu_text_append(&text, "uniform %s tex%d;\n", sampler_declaration(key->sampler_type[stage]), stage);
-	xgpu_text_append(&text,
+	 xgpu_text_append(&text,
 		"float signed_byte(float x)\n"
 		"{\n"
 		"	float b = floor(x * 255.0 + 0.5);\n"
@@ -572,6 +627,15 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 		"\tvec4 v1 = xD1;\n"
 		"\tvec4 t0 = vec4(0.0), t1 = vec4(0.0), t2 = vec4(0.0), t3 = vec4(0.0);\n"
 		"\tfloat dot0 = 0.0, dot1 = 0.0, dot2 = 0.0, dot3 = 0.0;\n");
+#endif
+
+#ifdef HALO_VITA
+	xgpu_text_append(&text,
+		"\tvec4 v0 = xD0;\n"
+		"\tvec4 v1 = xD1;\n"
+		"\tvec4 t0 = vec4(0.0), t1 = vec4(0.0), t2 = vec4(0.0), t3 = vec4(0.0);\n"
+		"\tfloat dot0 = 0.0, dot1 = 0.0, dot2 = 0.0, dot3 = 0.0;\n");
+#endif
 
 	for (stage = 0; stage < 4; stage++)
 		texture_stage(&text, key, stage);
@@ -645,18 +709,24 @@ char *nv2a_pixel_shader_to_glsl(const struct nv2a_pixel_shader_key *key)
 		if (!comparison)
 			xgpu_text_append(&text, "\tdiscard;\n");
 		else if (*comparison)
-			xgpu_text_append(&text, "\tif (!(floor(clamp(result.a, 0.0, 1.0) * 255.0 + 0.5) %s alpha_reference)) discard;\n", comparison);
+			xgpu_text_append(&text, "\tif (!(mod(floor(clamp(result.a, 0.0, 1.0) * 255.0 + 0.5), 256.0) %s alpha_reference)) discard;\n", comparison);
 	}
+#ifndef HALO_VITA
 	if (*config_string("debug.gpu_debug_expression"))
 		xgpu_text_append(&text, "\tresult = vec4(vec3(%s), 1.0);\n", config_string("debug.gpu_debug_expression"));
 	if (config_boolean("debug.gpu_debug_texture0"))
 		xgpu_text_append(&text, "\tresult = vec4(t0.rgb, 1.0);\n");
 	if (config_boolean("debug.gpu_debug_flat"))
 		xgpu_text_append(&text, "\tresult = xD0.a > 0.0 ? vec4(xD0.rgb, 1.0) : vec4(1.0, 0.0, 1.0, 1.0);\n");
+#endif
 #ifdef HALO_ANDROID
 	if (key->count_samples)
 		xgpu_text_append(&text, "\tatomicCounterIncrement(visible_samples);\n");
 #endif
+#ifdef HALO_VITA
+	xgpu_text_append(&text, "\tgl_FragColor = clamp(result, 0.0, 1.0);\n}\n");
+#else
 	xgpu_text_append(&text, "\tfragment_color = clamp(result, 0.0, 1.0);\n}\n");
+#endif
 	return text.buffer;
 }

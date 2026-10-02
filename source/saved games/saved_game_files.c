@@ -706,21 +706,27 @@ boolean saved_game_file_name_unique(
 {
 	char save_game_directory[MAXIMUM_FILENAME_LENGTH+1];
 	char root_path[MEMORY_UNIT_ROOT_PATH_SIZE];
-	boolean unique = FALSE;
+	DWORD result;
 
-	if (name && name[0] &&
-		XCreateSaveGame(
+	if (!name || !name[0])
+		return FALSE;
+
+	result = XCreateSaveGame(
 			wide_to_ascii(memory_unit_root_path[_memory_unit_hard_drive], root_path, sizeof(root_path)),
 			name,
 			OPEN_EXISTING,
 			0,
 			save_game_directory,
-			sizeof(save_game_directory)))
-	{
-		unique = TRUE;
-	}
+			sizeof(save_game_directory));
 
-	return unique;
+	/* OPEN_EXISTING succeeds when the name is already taken. Only NOT_FOUND
+	 * proves that CREATE_NEW can safely use this display name. */
+	if (result == ERROR_FILE_NOT_FOUND)
+		return TRUE;
+	if (result != ERROR_SUCCESS)
+		error(_error_silent, "could not check saved game name (error=%lu)", result);
+
+	return FALSE;
 }
 
 void saved_game_file_remember_player1_last_used_profile_directory(
@@ -1380,13 +1386,15 @@ long create_enumerated_saved_game_file(
 			char root_path[MEMORY_UNIT_ROOT_PATH_SIZE] = {0};
 			char save_game_directory[MAXIMUM_FILENAME_LENGTH+1] = {0};
 
-			if (!XCreateSaveGame(
+			DWORD create_save_result = XCreateSaveGame(
 					wide_to_ascii(memory_unit_root_path[_memory_unit_hard_drive], root_path, sizeof(root_path)),
 					display_name,
 					CREATE_NEW,
 					0,
 					save_game_directory,
-					sizeof(save_game_directory)))
+					sizeof(save_game_directory));
+
+			if (!create_save_result)
 			{
 				struct enumerated_saved_game_file file = {0};
 				long profile_index;
@@ -1477,7 +1485,7 @@ long create_enumerated_saved_game_file(
 			}
 			else
 			{
-				error(_error_silent, "XCreateSaveGame() failed to create meta data for a new saved game file");
+				error(_error_silent, "XCreateSaveGame() failed to create meta data for a new saved game file (code=0x%08lx)", create_save_result);
 			}
 		}
 		else
@@ -1592,14 +1600,24 @@ void saved_game_file_get_useable_untitled_profile_name(
 
 		for (index = 0; index < MAXIMUM_UNTITLED_SAVED_GAMES; index++)
 		{
+			DWORD result;
+
 			usnprintf(display_name, MAX_GAMENAME-1,
 				unicode_string_list_get_string(string_list_index, _saved_game_file_string_untitled_name_format),
 				index+1);
 			display_name[MAX_GAMENAME-1] = 0;
 
-			if (XCreateSaveGame(root_path, display_name, OPEN_EXISTING, 0, save_game_directory, sizeof(save_game_directory)))
+			result = XCreateSaveGame(root_path, display_name, OPEN_EXISTING, 0,
+				save_game_directory, sizeof(save_game_directory));
+			if (result == ERROR_FILE_NOT_FOUND)
 			{
 				break;
+			}
+			if (result != ERROR_SUCCESS && result != ERROR_ALREADY_EXISTS)
+			{
+				error(_error_silent, "failed to check untitled saved game name (error=%lu)", result);
+				display_name[0] = 0;
+				return;
 			}
 		}
 

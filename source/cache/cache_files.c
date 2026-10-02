@@ -131,6 +131,7 @@ symbols in this file:
 #include "physical_memory_map.h"
 #include "sound_cache.h"
 #include "scenario/scenario_definitions.h"
+#include "hs/hs_scenario_definitions.h"
 #include "sound/sound_manager.h"
 
 /* ---------- constants */
@@ -248,26 +249,111 @@ char const *data_00316820[] =
 #define XBOX_TAG_CACHE_BASE  0x803A6000UL
 #define XBOX_TAG_CACHE_SIZE  0x01600000UL
 
+static boolean cache_file_vita_unaligned_string_pointer(
+	void const *region,
+	unsigned long region_bytes,
+	unsigned long value)
+{
+	unsigned long offset;
+	unsigned long limit;
+	unsigned long index;
+	boolean has_character = FALSE;
+	byte const *string;
+
+	if (value < XBOX_TAG_CACHE_BASE ||
+		value >= XBOX_TAG_CACHE_BASE + region_bytes)
+		return FALSE;
+
+	offset = value - XBOX_TAG_CACHE_BASE;
+	limit = MIN(256UL, region_bytes - offset);
+	string = (byte const *)region + offset;
+	for (index = 0; index < limit; index++)
+	{
+		byte character = string[index];
+		if (!character)
+			return has_character;
+		if (character < 0x20 && character != '\t' && character != '\r' && character != '\n')
+			return FALSE;
+		if (character != ' ')
+			has_character = TRUE;
+	}
+
+	return FALSE;
+}
+
+struct cache_file_vita_rebase_exclusion
+{
+	void const *address;
+	unsigned long bytes;
+};
+
+/* These ranges contain serialized values, not relocatable pointers. Validate
+ * them BEFORE rewriting the owning scenario's tag_block/tag_data addresses. */
+static boolean cache_file_vita_exclude_range(
+	struct cache_file_vita_rebase_exclusion *range,
+	void *tag_cache, unsigned long tag_bytes,
+	unsigned long raw_address, unsigned long count, unsigned long element_size)
+{
+	unsigned long offset;
+	range->address = NULL;
+	range->bytes = 0;
+	if (!count)
+		return TRUE;
+	if (!element_size || raw_address < XBOX_TAG_CACHE_BASE)
+		return FALSE;
+	offset = raw_address-XBOX_TAG_CACHE_BASE;
+	if (offset >= tag_bytes || count > (tag_bytes-offset)/element_size)
+		return FALSE;
+	range->address = (byte *)tag_cache+offset;
+	range->bytes = count*element_size;
+	return TRUE;
+}
+
 static void cache_file_rebase_vita_region(
 	void *region,
 	unsigned long region_bytes,
+	void const *tag_string_region,
+	unsigned long tag_string_bytes,
+	struct cache_file_vita_rebase_exclusion const *exclusions,
+	unsigned long exclusion_count,
 	unsigned long tag_delta,
 	unsigned long state_delta,
 	unsigned long *tag_rebased,
+	unsigned long *unaligned_strings_rebased,
 	unsigned long *high_tag_rebased,
-	unsigned long *state_rebased)
+	unsigned long *state_rebased,
+	unsigned long *excluded_words)
 {
 	unsigned long *words = (unsigned long *)region;
 	unsigned long word_count = region_bytes / sizeof(*words);
+	unsigned long region_address = (unsigned long)region;
 	unsigned long index;
 
 	for (index = 0; index < word_count; index++)
 	{
+		unsigned long word_address = region_address + index * sizeof(*words);
 		unsigned long value = words[index];
-
-		if (!(value & 3) && value >= XBOX_TAG_CACHE_BASE &&
-			value < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE)
+		unsigned long range_index;
+		for (range_index = 0; range_index < exclusion_count; range_index++)
 		{
+			unsigned long excluded_address = (unsigned long)exclusions[range_index].address;
+			unsigned long excluded_bytes = exclusions[range_index].bytes;
+			if (excluded_bytes && word_address < excluded_address + excluded_bytes &&
+				word_address + sizeof(*words) > excluded_address)
+				break;
+		}
+		if (range_index < exclusion_count)
+		{
+			if (excluded_words) (*excluded_words)++;
+			continue;
+		}
+
+		if (value >= XBOX_TAG_CACHE_BASE &&
+			value < XBOX_TAG_CACHE_BASE + XBOX_TAG_CACHE_SIZE &&
+			(!(value & 3) || cache_file_vita_unaligned_string_pointer(tag_string_region, tag_string_bytes, value)))
+		{
+			if (value & 3)
+				(*unaligned_strings_rebased)++;
 			if (value >= XBOX_TAG_CACHE_BASE + region_bytes)
 				(*high_tag_rebased)++;
 			words[index] = value + tag_delta;
@@ -290,9 +376,15 @@ static boolean cache_file_rebase_vita_pointers(void *tag_cache, unsigned long ta
 	unsigned long state_base = (unsigned long)physical_memory_get_game_state_base_address();
 	unsigned long state_delta = state_base - XBOX_GAME_STATE_BASE;
 	unsigned long tag_rebased = 0;
+	unsigned long unaligned_strings_rebased = 0;
 	unsigned long high_tag_bases = 0;
 	unsigned long state_rebased = 0;
+	unsigned long syntax_words_excluded = 0;
+	void *syntax_region = NULL;
+	unsigned long syntax_bytes = 0;
+	struct cache_file_vita_rebase_exclusion exclusions[4] = {{0}};
 	unsigned long index;
+	short scenario_absolute_index;
 	FILE *log;
 
 	if (!tag_cache || !state_base || !tag_bytes || tag_bytes > XBOX_TAG_CACHE_SIZE)
@@ -352,6 +444,44 @@ static boolean cache_file_rebase_vita_pointers(void *tag_cache, unsigned long ta
 		tag_rebased++;
 	}
 
+	/* HS nodes AND script/global entry records contain datum handles rather
+	 * than addresses. A valid handle such as 0x818f1e1c overlaps Xbox RAM.
+	 * Preserve the complete value-only records and string bytes. The owning
+	 * scenario's block pointers still go through the normal relocation pass.
+	 * hs_scenario_postprocess resets the syntax data_array->data pointer. */
+	scenario_absolute_index = (short)header->scenario_tag_index;
+	if (header->scenario_tag_index != NONE &&
+		scenario_absolute_index >= 0 &&
+		scenario_absolute_index < header->tag_count)
+	{
+		struct cache_file_tag_instance *scenario_instance =
+			&instances[scenario_absolute_index];
+		unsigned long scenario_address = (unsigned long)scenario_instance->base_address;
+		if (scenario_instance->tag_index == header->scenario_tag_index &&
+			scenario_instance->group_tag == SCENARIO_TAG &&
+			tag_bytes >= sizeof(struct scenario) &&
+			scenario_address >= (unsigned long)tag_cache &&
+			scenario_address <= (unsigned long)tag_cache + tag_bytes - sizeof(struct scenario))
+		{
+			struct scenario *scenario = (struct scenario *)scenario_address;
+			if (!cache_file_vita_exclude_range(&exclusions[0], tag_cache, tag_bytes,
+				(unsigned long)scenario->hs_syntax_data.address,
+				(unsigned long)scenario->hs_syntax_data.size, 1) ||
+				!cache_file_vita_exclude_range(&exclusions[1], tag_cache, tag_bytes,
+				(unsigned long)scenario->hs_scripts.address,
+				(unsigned long)scenario->hs_scripts.count, sizeof(struct hs_script)) ||
+				!cache_file_vita_exclude_range(&exclusions[2], tag_cache, tag_bytes,
+				(unsigned long)scenario->hs_globals.address,
+				(unsigned long)scenario->hs_globals.count, sizeof(struct hs_global)) ||
+				!cache_file_vita_exclude_range(&exclusions[3], tag_cache, tag_bytes,
+				(unsigned long)scenario->hs_string_constants.address,
+				(unsigned long)scenario->hs_string_constants.size, 1))
+				return FALSE;
+			syntax_region = (void *)exclusions[0].address;
+			syntax_bytes = exclusions[0].bytes;
+		}
+	}
+
 	/* Xbox cache data is a linked in-memory image.  Pointers stored in the
 	 * serialized tag payload may target any part of the complete 22 MiB tag
 	 * window, not merely the bytes present in the initial tag-data chunk.
@@ -361,17 +491,41 @@ static boolean cache_file_rebase_vita_pointers(void *tag_cache, unsigned long ta
 	cache_file_rebase_vita_region(
 		tag_cache,
 		tag_bytes,
+		tag_cache,
+		tag_bytes,
+		exclusions,
+		4,
 		tag_delta,
 		state_delta,
 		&tag_rebased,
+		&unaligned_strings_rebased,
 		&high_tag_bases,
-		&state_rebased);
+		&state_rebased,
+		&syntax_words_excluded);
 
 	log = fopen("ux0:data/halo/boot.log", "a");
 	if (log)
 	{
-		fprintf(log, "tag_rebase: tag_base=%p tag_bytes=%lu tag_pointers=%lu high_tag_pointers=%lu state_pointers=%lu\n",
-			tag_cache, tag_bytes, tag_rebased, high_tag_bases, state_rebased);
+		fprintf(log, "tag_rebase: tag_base=%p tag_bytes=%lu tag_pointers=%lu unaligned_string_pointers=%lu high_tag_pointers=%lu state_pointers=%lu hs_syntax=%p/%lu excluded_words=%lu\n",
+			tag_cache, tag_bytes, tag_rebased, unaligned_strings_rebased, high_tag_bases, state_rebased,
+			syntax_region, syntax_bytes, syntax_words_excluded);
+		fprintf(log, "hs_rebase_preserved: scripts=%lu globals=%lu string_bytes=%lu\n",
+			exclusions[1].bytes / (unsigned long)sizeof(struct hs_script),
+			exclusions[2].bytes / (unsigned long)sizeof(struct hs_global), exclusions[3].bytes);
+		if (!syntax_region)
+		{
+			fprintf(log, "tag_rebase: scenario_tag_index=%08lx absolute=%d scenario_instance_tag_index=%08lx group=%08lx base=%p\n",
+				(unsigned long)header->scenario_tag_index, scenario_absolute_index,
+				header->scenario_tag_index != NONE && scenario_absolute_index >= 0 &&
+					scenario_absolute_index < header->tag_count ?
+						(unsigned long)instances[scenario_absolute_index].tag_index : 0,
+				header->scenario_tag_index != NONE && scenario_absolute_index >= 0 &&
+					scenario_absolute_index < header->tag_count ?
+						(unsigned long)instances[scenario_absolute_index].group_tag : 0,
+				header->scenario_tag_index != NONE && scenario_absolute_index >= 0 &&
+					scenario_absolute_index < header->tag_count ?
+						instances[scenario_absolute_index].base_address : NULL);
+		}
 		fclose(log);
 	}
 
@@ -719,11 +873,27 @@ boolean cache_file_header_verify(
 	char const *scenario_name,
 	boolean fatal)
 {
+#ifdef HALO_VITA
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log) {
+			fprintf(log, "cache_header: requested='%.255s' name='%.32s' head=%08lx foot=%08lx bytes=%ld version=%ld fatal=%d\n",
+				scenario_name ? scenario_name : "<null>", header->name,
+				header->header_signature, header->footer_signature, header->file_length,
+				(long)header->version, (int)fatal);
+			fclose(log);
+		}
+	}
+#endif
 	if (header->header_signature != CACHE_FILE_HEADER_SIGNATURE ||
 		header->footer_signature != CACHE_FILE_FOOTER_SIGNATURE ||
 		header->file_length < 0 ||
 		header->file_length > 0x11600000 ||
+#ifdef HALO_VITA
+		!memchr(header->name, 0, sizeof(header->name)))
+#else
 		csstrlen(header->name) > 31)
+#endif
 	{
 		if (fatal)
 		{
@@ -824,6 +994,12 @@ long scenario_tags_load(
 
 	stripped_scenario_name = tag_name_strip_path(scenario_name);
 	result = NONE;
+#ifdef HALO_VITA
+	{
+		FILE *log = fopen("ux0:data/halo/boot.log", "a");
+		if (log) { fprintf(log, "campaign_load: scenario_tags_load name=%p '%.255s' stripped='%.255s'\n", scenario_name, scenario_name, stripped_scenario_name); fclose(log); }
+	}
+#endif
 	texture_cache_open();
 	sound_cache_open();
 	if (cache_file_open(stripped_scenario_name, &cache_file_globals.header))
@@ -884,6 +1060,7 @@ boolean scenario_structure_bsp_load(
 	byte *tag_cache_base_address;
 #ifdef HALO_VITA
 	unsigned long bsp_tag_rebased = 0;
+	unsigned long bsp_unaligned_strings_rebased = 0;
 	unsigned long bsp_high_tag_rebased = 0;
 	unsigned long bsp_state_rebased = 0;
 	unsigned long tag_delta;
@@ -938,19 +1115,26 @@ boolean scenario_structure_bsp_load(
 	cache_file_rebase_vita_region(
 		reference->base_address,
 		reference->file_size,
+		tag_cache_base_address,
+		cache_file_globals.header.tag_data_size,
+		NULL,
+		0,
 		tag_delta,
 		state_delta,
 		&bsp_tag_rebased,
+		&bsp_unaligned_strings_rebased,
 		&bsp_high_tag_rebased,
-		&bsp_state_rebased);
+		&bsp_state_rebased,
+		NULL);
 	vita_log = fopen("ux0:data/halo/boot.log", "a");
 	if (vita_log)
 	{
 		fprintf(vita_log,
-			"bsp_rebase: destination=%p bytes=%ld tag_pointers=%lu high_tag_pointers=%lu state_pointers=%lu\n",
+			"bsp_rebase: destination=%p bytes=%ld tag_pointers=%lu unaligned_string_pointers=%lu high_tag_pointers=%lu state_pointers=%lu\n",
 			reference->base_address,
 			reference->file_size,
 			bsp_tag_rebased,
+			bsp_unaligned_strings_rebased,
 			bsp_high_tag_rebased,
 			bsp_state_rebased);
 		fclose(vita_log);
